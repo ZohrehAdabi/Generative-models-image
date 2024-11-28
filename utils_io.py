@@ -20,7 +20,7 @@ def parse_args(method='Diffusion', script='sampling'):
     parser.add_argument('--n_epoch'             , default=5, type=int, help ='Use this when do not determine start and stop epoch') 
     parser.add_argument('--lr'                  , default=1e-3, type=float, help ='Learning rate for decoder/generator')
     
-    parser.add_argument('--n_samples'           , default=500, type=int, help='Number of samples for generation') 
+    parser.add_argument('--n_samples'           , default=36, type=int, help='Number of samples for generation') 
 
     if method in ['DDPM', 'DDPM-Hidden', 'FlowMatching', 'Boosting', 'BoostingOne', 'Regression']: 
         parser.add_argument('--beta_schedule'       , default='linear', help='{linear|quadratic|sigmoid|cosine}')

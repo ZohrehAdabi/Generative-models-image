@@ -1,7 +1,7 @@
 
 from common_imports_diffusion import *
 
-from utils_diffusion import get_fake_sample_grid
+from utils_diffusion import denormalize
 
 class DDPM_Sampler(nn.Module):
 
@@ -33,21 +33,19 @@ class DDPM_Sampler(nn.Module):
         self.sqrt_one_minus_alphas = torch.sqrt(1 - self.alphas) 
     
 
-    def sampling(self, n_samples=5, data_dim=2, grid_size=10, normalize=False, scaler=None, params=None, device='cuda'):
+    def sampling(self, n_samples=5, data_dim=2, params=None, device='cuda'):
 
         self.model.to(device)
         self.model.eval()
 
-        sample = torch.randn(n_samples, data_dim).to(device)
+        sample = torch.randn(n_samples, *data_dim).to(device)
         timesteps = torch.arange(self.n_timestep_smpl-1, -1, -1)
-        intermediate_smpl = np.empty([self.n_timestep_smpl+1, n_samples, data_dim])
-        intermediate_smpl[-1] = sample.cpu()
+        intermediate_smpl = np.empty([self.n_timestep_smpl+1, n_samples, *data_dim[::-1]])
+        intermediate_smpl[-1] = sample.permute(0, 2, 3, 1).cpu()
         
-        # noises = np.empty([self.n_timestep_smpl, n_samples, data_dim])
+        noises = np.empty([self.n_timestep_smpl, n_samples, *data_dim[::-1]])
         nois_norm_list = []
-        grid_samples, grid_x, grid_y = get_fake_sample_grid(grid_size) # for ploting quiver
-        grid_samples = grid_samples.to(device) # instead of sample, save noise value for grid
-        noises_grid = np.empty([self.n_timestep_smpl, grid_size**2, data_dim])
+        
 
         timestp = tqdm(timesteps, disable=self.training)
         for t in timestp: 
@@ -56,20 +54,15 @@ class DDPM_Sampler(nn.Module):
                 sample, predicted_noise = self.sampling_ddpm_step(sample, times)
                 nois_norm_list.append([torch.linalg.norm(predicted_noise, axis=1).mean().cpu().numpy()])
                 
-                pred_noise = self.model(grid_samples, torch.repeat_interleave(t, grid_size**2).reshape(-1, 1).long().to(device))
-                noises_grid[t, :, :] = pred_noise.cpu().numpy()
-            
-            if normalize:
-                 intermediate_smpl[t, :, :] = scaler.inverse_transform(sample.cpu())
-            else:
-                intermediate_smpl[t, :, :] = sample.cpu()
-            # intermediate_smpl[t, :, :] = sample.cpu()
+                noises[t] = predicted_noise.permute(0, 2, 3, 1).cpu().numpy()         
+                intermediate_smpl[t] = denormalize(sample.cpu().numpy())
+
         timestp.close() 
         sample_zero = intermediate_smpl[0]
         noise_norm = np.concatenate(nois_norm_list)  
-        self.save_result(sample_zero, intermediate_smpl, noise_norm, noises_grid, params)
+        self.save_result(sample_zero, intermediate_smpl, noise_norm, noises, params)
 
-        return sample_zero, intermediate_smpl, noises_grid, noise_norm
+        return sample_zero, intermediate_smpl, noises, noise_norm
 
     def samplinga_by_selected_model_t(self, sample_t=None, selected_t=0, n_timestep_smpl=40, 
                                       n_samples=5, data_dim=2, normalize=False, scaler=None, params=None, device='cuda'):
@@ -190,7 +183,7 @@ class DDPM_Sampler(nn.Module):
 
         mu = self.compute_mu_theta(x, t, predicted_noise)
         sigma2 = self.reverse_variance(t)
-        x = mu + torch.sqrt(sigma2) * torch.randn_like(x) * int((t>0).all())
+        x = mu + torch.sqrt(sigma2)[:, :, None, None] * torch.randn_like(x) * int((t>0).all())
 
         return x, predicted_noise
     
@@ -256,7 +249,7 @@ class DDPM_Sampler(nn.Module):
         """
         b = self.betas[t]
         s_one_alpha = self.sqrt_one_minus_alphas[t]
-        return (1/torch.sqrt(1-b)) * (x - (b/s_one_alpha) * predicted_noise)
+        return (1/torch.sqrt(1-b))[:, :, None, None] * (x - (b/s_one_alpha)[:, :, None, None]  * predicted_noise)
     
     def reverse_variance(self, t):
         """

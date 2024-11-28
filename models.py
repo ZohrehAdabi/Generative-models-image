@@ -541,7 +541,10 @@ class UNetMNIST(nn.Module):
         super().__init__()
         
         # self.time_embedding = nn.Embedding(1000, time_emb_dim)
-        self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
+        if time_emb_dim == 1:
+            self.time_pos_enc = nn.Identity()
+        else:
+            self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
         layers_num = np.arange(0, depth)
         self.encoder = nn.ModuleList([
             nn.Sequential(nn.Conv2d(in_channels + time_emb_dim, base_channel, kernel_size=3, padding=1), nn.ReLU())] +

@@ -1,7 +1,7 @@
 from common_imports_diffusion import *
 
 from diffusion_ddpm_sampling import DDPM_Sampler
-
+from utils_diffusion import construct_image_grid
 
 
 class DDPM_Model(nn.Module):
@@ -59,8 +59,9 @@ class DDPM_Model(nn.Module):
         for epoch in epochs:
             loss_hist_epoch = []
             # epochs.set_description(f"Epoch {epoch}")
-            for itr, x_batch in enumerate(self.dataloader):
+            for itr, (x_batch, _) in enumerate(self.dataloader):
                 
+                x_batch = x_batch.to(device)
                 eps_noise, predicted_noise = self.train_ddpm_step(x_batch)
                 loss = loss_fn(eps_noise, predicted_noise)
                 optimizer.zero_grad()
@@ -87,7 +88,7 @@ class DDPM_Model(nn.Module):
                         torch.save(self.model.state_dict(), f'{params.save_dir}/saved_models/{self.expr_id}.pth')
 
                 if (epoch + 1)% params.save_freq == 0 and params.validation:
-                    self.save_result(epoch, loss_hist, x_batch.shape[1])
+                    self.save_result(epoch, loss_hist, x_batch.shape[1:])
                         
                     self.model.train()
                 
@@ -108,10 +109,10 @@ class DDPM_Model(nn.Module):
     def save_result(self, epoch, loss_hist, data_dim):
         
         sampler = DDPM_Sampler(model=self.model, betas=self.betas, n_timestep_smpl=n_timestep_smpl, training=True)
-        samples_zero, intermediate_smpl, noises_grid, noise_norm = sampler.sampling(n_samples=params.n_samples, data_dim=data_dim, grid_size=params.grid_size, 
-                                                        normalize=params.normalize, scaler=scaler, device=device)
+        samples_zero, intermediate_smpl, noises, noise_norm = sampler.sampling(n_samples=params.n_samples, 
+                                                                                    data_dim=data_dim, device=device)
         if params.save_fig:
-            plot_samples(samples_zero, dataset, f'{params.save_dir}/plot_samples_training/{self.expr_id}/{epoch+1}.png')
+            plot_samples(samples_zero, dataset_mini, f'{params.save_dir}/plot_samples_training/{self.expr_id}/{epoch+1}.png')
             plt.figure()
             plt.plot(loss_hist)
             plt.title(f'epoch: {epoch+1}')
@@ -125,12 +126,33 @@ class DDPM_Model(nn.Module):
             # step = self.n_timesteps // params.n_sel_time
             # dfs = pd.DataFrame(intermediate_smpl[::step, :, :].reshape(-1, data_dim), columns=['x', 'y'])
             intermediate_smpl = select_samples_for_plot(intermediate_smpl, params.n_samples, n_timestep_smpl, params.n_sel_time)
-            dfims = pd.DataFrame({'x':intermediate_smpl[:, 0], 'y':intermediate_smpl[:, 1], 'time':intermediate_smpl[:, 2], 'epoch': np.repeat(epoch + 1, intermediate_smpl.shape[0])})
             
-            noises_grid = select_samples_for_plot(noises_grid, params.grid_size**2, n_timestep_smpl, params.n_sel_time)
-            dfng = pd.DataFrame({'u':noises_grid[:, 0], 'v':noises_grid[:, 1], 'time':noises_grid[:, 2], 'epoch': np.repeat(epoch + 1, noises_grid.shape[0])})
+            new_data = construct_image_grid(params.n_sel_time, intermediate_smpl)    
+            flat_img_len = np.prod(new_data.shape[1:])
+            data = {'epoch': [epoch + 1]  * flat_img_len}
+
+            for i, img in enumerate(new_data):
+                data[f'data_{i}'] = img.flatten()
+
+            dfims = pd.DataFrame(data) 
+
+                        
+            noises = select_samples_for_plot(noises, params.grid_size**2, n_timestep_smpl, params.n_sel_time)
+            new_noise = construct_image_grid(params.n_sel_time, noises)    
+            flat_noise_len = np.prod(new_noise.shape[1:])
+            noises = {'epoch': [epoch + 1]  * flat_noise_len}
+
+            for i, img in enumerate(new_noise):
+                noises[f'data_{i}'] = img.flatten()
+            dfng = pd.DataFrame(data) 
             
-            dfs = pd.DataFrame({'x':samples_zero[:, 0], 'y':samples_zero[:, 1], 'epoch': np.repeat(epoch + 1, samples_zero.shape[0])})
+
+            new_data_zero = construct_image_grid(1, samples_zero[None, :, :, :, :]) 
+            flat_img_len = np.prod(new_data_zero.shape[1:])
+            data_zero = {'epoch': [epoch + 1]  * flat_img_len}
+            data_zero[f'data_{0}'] = new_data_zero[0].flatten()
+            dfs = pd.DataFrame(data_zero) 
+            
             dfni = pd.DataFrame({'sample_noise_norm':noise_norm, 'epoch': np.repeat(epoch + 1, noise_norm.shape[0])})
 
             with pd.HDFStore(file_sample, 'a') as hdf_store_samples:
@@ -207,11 +229,13 @@ if __name__=='__main__':
     
     ddpm = DDPM_Model(model=model, dataloader=dataloader, betas=betas, n_timesteps=n_timesteps, expr_id=expr_id)
     print(f'\n {expr_id}\n')
-
+    dataset_mini = torch.cat([next(iter(dataloader))[0], next(iter(dataloader))[0]])
     create_save_dir_training(params.save_dir, expr_id)
     if params.save_hdf:
-        file_loss, file_sample, file_sample_zero_all, df_loss_per_itr = \
-                create_hdf_file_training(params.save_dir, expr_id, n_timestep_smpl,  params.n_sel_time, params.grid_size, params.n_samples)
+        file_loss, file_sample, df_loss_per_itr = \
+                create_hdf_file_training(params.save_dir, expr_id, dataset_mini, n_timestep_smpl,  params.n_sel_time, params.grid_size, params.n_samples)
+
+    # torch.set_default_device(device)
 
     ddpm.train(n_epochs=n_epochs, lr=lr, device=device)
 

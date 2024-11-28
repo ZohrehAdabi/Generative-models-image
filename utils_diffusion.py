@@ -101,6 +101,32 @@ def create_save_dir(save_dir):
     path_save = p / 'plot_samples'
     path_save.mkdir(parents=True, exist_ok=True)
 
+
+def construct_image_grid(n_timestep, images):
+
+    k_row, k_col = 6, 6
+    height, width, channels = images.shape[2:] # height == width
+    p_row = 10
+    p_col = 10
+    new_img_data = np.zeros([n_timestep, height*k_row + p_row*(k_row-1), width*k_col + p_col*(k_col-1),
+                            channels], dtype=np.uint8)
+    pad = np.ones([1, 1, channels], dtype=np.uint8) * 200
+
+    indices_col = [width* i for i in range(1, k_col)]
+    indices_col = np.tile(indices_col, p_col)
+    indices_row = [height* i for i in range(1, k_row)]
+    indices_row = np.tile(indices_row, p_row)
+    for i in range(n_timestep):
+        img = images[i]
+        img = img.reshape([k_row, -1, height, width, channels])
+        img = np.concatenate(img, axis=1)
+        img = np.concatenate(img, axis=1)
+        img = np.insert(img, indices_col, pad, axis=1)
+        img = np.insert(img, indices_row, pad, axis=0)
+        new_img_data[i] = img
+
+    return new_img_data
+
 def create_hdf_file_training(save_dir, expr_id, dataset, n_timestep_smpl, n_sel_time, grid_size, n_samples):
             
     p = Path(save_dir)
@@ -108,26 +134,39 @@ def create_hdf_file_training(save_dir, expr_id, dataset, n_timestep_smpl, n_sel_
     path_save.mkdir(parents=True, exist_ok=True)
     file_loss = str(path_save) + f'/{expr_id}_df_loss_per_epoch.h5'
     file_sample = str(path_save) + f'/{expr_id}_df_sample_per_epoch.h5'
-    file_sample_zero_all = str(path_save) + f'/{expr_id}_df_sample_zero_per_epoch.h5'
+    # file_sample_zero_all = str(path_save) + f'/{expr_id}_df_sample_zero_per_epoch.h5'
     df_loss_per_epoch = pd.DataFrame(columns=['epoch', 'itr', 't', 'loss_itr', 'loss_epoch'])
     # df_samples_per_epoch = pd.DataFrame(columns=['epoch', 'data_x', 'data_y', 'intermediate_samples_x', 'intermediate_samples_y'])
-    data = dataset
-    if dataset.shape[0] > 1000:
-        data = dataset[np.linspace(0, dataset.shape[0]-1, 1000, dtype=int), :]
-    dfs = pd.DataFrame(data, columns=['data_x', 'data_y'])
+    
+    if dataset.shape[0] > n_samples:
+        dataset = dataset[np.linspace(0, dataset.shape[0]-1, 36, dtype=int), :, :, :]
+
+    dataset = dataset.cpu().numpy()   # permute
+    dataset = denormalize(dataset)
+    dataset = dataset[None, :, :, :, :]
+
+    new_data = construct_image_grid(1, dataset)    
+    flat_img_len = np.prod(new_data.shape[1:])
+    data = {'epoch': [0]  * flat_img_len}
+
+    for i, img in enumerate(new_data):
+        data[f'data_{i}'] = img.flatten()
+
+    dfs = pd.DataFrame(data)#.astype(int)
 
     sampling_timesteps = select_steps(n_timestep_smpl, n_sel_time)
     
     with pd.HDFStore(file_sample, 'w') as hdf_store_samples:
         hdf_store_samples.append(key=f'df/data', value=dfs, format='t', data_columns=True)
-        hdf_store_samples.append(key=f'df/info', value=pd.DataFrame({'n_sel_time': [n_sel_time], 'grid_size':[grid_size], 'n_samples': [n_samples]}), format='t')
+        hdf_store_samples.append(key=f'df/info', value=pd.DataFrame({'n_sel_time': [n_sel_time], 'grid_size':[grid_size], 
+                                                                     'n_samples': [n_samples], 'image_shape': [str(new_data.shape[1:])[1:-1].replace(' ', '')]}), format='t')
         hdf_store_samples.append(key=f'df/sampling_timesteps', value=pd.DataFrame({'time': sampling_timesteps}), format='t')
 
-    with pd.HDFStore(file_sample_zero_all, 'w') as hdf_store_samples_zero:
-        hdf_store_samples_zero.append(key=f'df/data', value=dfs, format='t', data_columns=True)
-        hdf_store_samples_zero.append(key=f'df/info', value=pd.DataFrame({'n_samples': [n_samples], 'n_sel_time': [n_sel_time]}), format='t')
+    # with pd.HDFStore(file_sample_zero_all, 'w') as hdf_store_samples_zero:
+    #     hdf_store_samples_zero.append(key=f'df/data', value=dfs, format='t', data_columns=True)
+    #     hdf_store_samples_zero.append(key=f'df/info', value=pd.DataFrame({'n_samples': [n_samples], 'n_sel_time': [n_sel_time]}), format='t')
 
-    return file_loss, file_sample,file_sample_zero_all, df_loss_per_epoch
+    return file_loss, file_sample, df_loss_per_epoch
 
 def create_hdf_file(save_dir, expr_id, dataset, n_timestep_smpl, n_sel_time, n_samples, test_name=None):
             
@@ -165,21 +204,18 @@ def select_steps(n_timestep_smpl, n_sel_time):
 
     return steps[::-1]
 
-def select_samples_for_plot(intermediate_smpl, n_samples, n_timestep_smpl, n_sel_time, with_time=True):
+def select_samples_for_plot(intermediate_smpl, n_samples, n_timestep_smpl, n_sel_time, with_time=False):
     
 
     # if intermediate_smpl.shape[0] == n_timestep_smpl:
     #     n_timestep_smpl -= 1
     n_timestep_smpl = intermediate_smpl.shape[0]
     steps = select_steps(n_timestep_smpl, n_sel_time)
-    selected = intermediate_smpl[steps, :, :].reshape(-1, intermediate_smpl.shape[-1])
+    selected = intermediate_smpl[steps]#.reshape(-1, *intermediate_smpl.shape[2:])
     # attention to time reversibility in sampling time
-    selected_with_time = np.hstack([selected, np.repeat(steps, n_samples).reshape(-1, 1)])
-    
-    if with_time:
-        return selected_with_time
-    else:
-        return selected
+    # selected_with_time = np.hstack([selected, np.repeat(steps, n_samples).reshape(-1, 1)])
+
+    return selected
 
 def denormalize(img, dataset_name=None):
 
@@ -189,7 +225,8 @@ def denormalize(img, dataset_name=None):
         std = np.array([0.5])
         out_img = img * std + mean
         out_img = np.clip(out_img, a_min=0, a_max=1)
-        return out_img.squeeze(1)
+        img = out_img.transpose(0, 2, 3, 1)
+        return img
     
     if dataset_name in ['CIFAR10', 'CelebA'] or img.shape[1] == 3:
 
@@ -197,9 +234,9 @@ def denormalize(img, dataset_name=None):
         std = np.array([0.5, 0.5, 0.5]).reshape([3, 1, 1])  
         out_img = img * std + mean
         denorm_image = np.clip(out_img, a_min=0, a_max=1) 
-        img = denorm_image.permute(0, 2, 3, 1).cpu().numpy()  # Convert to HWC format
-
-        return img
+        img = denorm_image.transpose(0, 2, 3, 1)  # Convert to HWC format 
+        color_img = (img* 255).astype('uint8')
+        return color_img
 
 
 

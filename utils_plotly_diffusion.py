@@ -798,48 +798,6 @@ def final_plot(fig_sample, fig_data):
     return fig_all
 
 
-def plot_animation_regression(method, expr_id, training=True, epoch_key=-1, all_zeros=False, quiver_name=None, test_name=None):
-
-    dataset_name, config = get_dataset_name(method, expr_id)
-    path = f'saved_result/{method}/{dataset_name}/saved_hdfs_training' if training else f'saved_result/{method}/{dataset_name}/saved_hdfs'
-    file = f'{path}/{expr_id}_df_prediction_per_epoch.h5' if training else f'{path}/{expr_id}_df_prediction.h5'  
-    
-    if test_name is not None:
-       file = f'{path}/{expr_id}_df_prediction_{test_name}.h5' 
-    # if quiver_name is None:
-    #     quiver_name = 'next'
-
-    if training and all_zeros:
-        file = f'{path}/{expr_id}_df_prediction_zero_per_epoch.h5'
-        df_prediction, df_data, epoch_list, n_samples, error_list = read_hdf_prediction_regression_train(file)
-    # elif training:
-    #     df_sample, df_data, timesteps_list, n_sel_time, n_samples = read_hdf_train(file, key=epoch_key)
-    else:
-        df_prediction, df_data, n_samples, error = read_hdf_regression(file)
-       
-
-    if training and all_zeros:
-        quiver_name = None
-        df_prediction, df_data, animation_frame = prepare_df_zeros_for_plotly(df_prediction, df_data, epoch_list, n_samples)
-    else:
-        fig_prediction = create_fig_prediction_regression(df_prediction, df_data, error)
-        # df_prediction, df_data, animation_frame = prepare_df_for_plotly(df_prediction, df_data, timesteps_list, n_sel_time)
-
-    # fig_sample, fig_data = prepare_plotly_fig(df_sample, df_data, animation_frame)
-    # fig_all = final_plot(fig_sample, fig_data)
-    if training and all_zeros:
-        fig_sample, fig_data = prepare_plotly_fig(df_prediction, df_data, animation_frame)
-        fig_all = final_plot(fig_sample, fig_data)
-
-
-    fig_loss = None
-    if training and all_zeros:
-        file = f'{path}/{expr_id}_df_loss_per_epoch.h5'
-        df_loss, df_loss_itr = read_hdf_loss_regression(file)
-        fig_loss = create_fig_loss_regression(df_loss, df_loss_itr)
-        return fig_all, fig_loss
-    else:
-        return fig_prediction, fig_loss
 
  
 
@@ -852,7 +810,7 @@ if __name__=='__main__':
     # expr_id = 'Regression_ToyRegressionNet_4_64_swissroll'
     # expr_id = 'Boosting_T_40_ToyBoosting_4_64_swissroll_t_dim_1_innr_ep_500_gamma_0.025'
     expr_id = 'DDPM-Hidden_beta_linear_T_40_ToyDDPMHidden_4_64_swissroll_t_dim_1_h_size_2'
-    expr_id = 'DDPM_beta_linear_T_40_ToyDDPM_4_64_swissroll_t_dim_1'
+    expr_id = 'DDPM_beta_linear_T_40_UNetMNIST_2_16_MNIST_t_dim_16'
     method = expr_id.split('_')[0]
     fig = plot_animation(method, expr_id, training=True, all_epochs=True, quiver_name='noise')
     # fig_sample, fig_loss = plot_animation_regression(method, expr_id, training=False, all_zeros=True)

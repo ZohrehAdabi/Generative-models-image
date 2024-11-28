@@ -16,6 +16,7 @@ def load_data(dataset_name):
     
     if dataset_name == 'MNIST': #std = 0.05
         transform = transforms.Compose([
+            transforms.Resize((32, 32)),
             transforms.ToTensor(),  # Converts to tensor and scales pixel values to [0, 1]
             transforms.Normalize((0.5,), (0.5,))  # Normalize with mean and std of 0.5 for grayscale
         ])
@@ -60,13 +61,15 @@ def load_data(dataset_name):
     return dataset
 
 
-def select_dataset(dataset_name, batch_size):
+def select_dataset(dataset_name, batch_size, device='cuda'):
 
     dataset = load_data(dataset_name)
 
     # dataset = data.to(torch.float).to(device)    
     # Create DataLoader
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=1)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=1,
+                            #  generator=torch.Generator(device=device)
+                            )
 
     
     return dataloader
