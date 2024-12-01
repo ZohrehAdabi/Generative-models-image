@@ -106,8 +106,8 @@ def construct_image_grid(n_timestep, images):
 
     k_row, k_col = 6, 6
     height, width, channels = images.shape[2:] # height == width
-    p_row = 10
-    p_col = 10
+    p_row = 3
+    p_col = 3
     new_img_data = np.zeros([n_timestep, height*k_row + p_row*(k_row-1), width*k_col + p_col*(k_col-1),
                             channels], dtype=np.uint8)
     pad = np.ones([1, 1, channels], dtype=np.uint8) * 200
@@ -226,7 +226,8 @@ def denormalize(img, dataset_name=None):
         out_img = img * std + mean
         out_img = np.clip(out_img, a_min=0, a_max=1)
         img = out_img.transpose(0, 2, 3, 1)
-        return img
+        gray_img = (img * 255).astype('uint8')
+        return gray_img
     
     if dataset_name in ['CIFAR10', 'CelebA'] or img.shape[1] == 3:
 

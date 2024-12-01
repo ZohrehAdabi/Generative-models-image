@@ -158,7 +158,7 @@ def read_hdf_loss(file):
     df_loss_fk_dt_itr['itr'] = np.arange(df_loss_fk_dt_itr.shape[0])
 
     df_score = df_loss.loc[:, ['epoch', 'real_score_epoch', 'fake_data_score_epoch']]
-    return df_loss.loc[:, ['epoch', 'loss_dsc_epoch', 'loss_fk_dt_epoch']], df_loss_dsc_itr, df_loss_fk_dt_itr, df_score
+    return df_loss.loc[:, ['epoch', 'loss_dsc_epoch', 'loss_fk_dt_epoch']], df_loss_dsc_itr.reset_index(drop=True), df_loss_fk_dt_itr.reset_index(drop=True), df_score
 
 
 
@@ -238,15 +238,23 @@ def add_statistics_to_fig(fig, df_loss_dsc_itr, df_loss_fk_dt_itr, df_loss, df_s
     # add traces of statistics
   
     x = df_loss_dsc_itr['itr']
+    y_dsc = (np.cumsum(df_loss_dsc_itr['loss_dsc_itr']) / x)
+    y_dsc[0] = df_loss_dsc_itr['loss_dsc_itr'][0]
+    y_gen = (np.cumsum(df_loss_dsc_itr['loss_gen_itr']) / x)
+    y_gen[0] = df_loss_dsc_itr['loss_gen_itr'][0]
     fig.add_trace(go.Scatter(x=x, y=df_loss_dsc_itr['loss_dsc_itr'], name="Loss D", mode='lines', visible=False, showlegend=True, line=dict(width=1, color='limegreen')))
     fig.add_trace(go.Scatter(x=x, y=df_loss_fk_dt_itr['loss_fk_dt_itr'], name="Loss F", mode='lines', visible=False, showlegend=True, line=dict(width=1, color='crimson'))) 
-    fig.add_trace(go.Scatter(x=x, y=(np.cumsum(df_loss_dsc_itr['loss_dsc_itr']) / x), name="Loss D mean", mode='lines', visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
-    fig.add_trace(go.Scatter(x=x, y=(np.cumsum(df_loss_fk_dt_itr['loss_fk_dt_itr']) / x), name="Loss F mean", mode='lines', visible=False, showlegend=True, line=dict(width=2, color='deeppink')))
+    fig.add_trace(go.Scatter(x=x, y=y_dsc, name="Loss D mean", mode='lines', visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
+    fig.add_trace(go.Scatter(x=x, y=y_gen, name="Loss F mean", mode='lines', visible=False, showlegend=True, line=dict(width=2, color='deeppink')))
     x = df_loss['epoch']
+    y_dsc = (np.cumsum(df_loss['loss_dsc_epoch']) / x)
+    y_dsc[0] = df_loss['loss_dsc_epoch'][0]
+    y_gen = (np.cumsum(df_loss['loss_gen_epoch']) / x)
+    y_gen[0] = df_loss['loss_gen_epoch'][0]
     fig.add_trace(go.Scatter(x=x, y=df_loss['loss_dsc_epoch'], name='Loss D', mode='lines', visible=False, showlegend=True, line=dict(width=1, color='limegreen'))) # lightsalmon
     fig.add_trace(go.Scatter(x=x, y=df_loss['loss_fk_dt_epoch'], name='Loss F', mode='lines', visible=False, showlegend=True, line=dict(width=1, color='crimson'))) # indianred
-    fig.add_trace(go.Scatter(x=x, y=(np.cumsum(df_loss['loss_dsc_epoch']) / x), name='Loss D mean' , mode='lines', visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
-    fig.add_trace(go.Scatter(x=x, y=(np.cumsum(df_loss['loss_fk_dt_epoch']) / x), name='Loss F mean' ,mode='lines', visible=False, showlegend=True, line=dict(width=2, color='deeppink')))
+    fig.add_trace(go.Scatter(x=x, y=y_dsc, name='Loss D mean' , mode='lines', visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
+    fig.add_trace(go.Scatter(x=x, y=y_gen, name='Loss F mean' ,mode='lines', visible=False, showlegend=True, line=dict(width=2, color='deeppink')))
     fig.update_layout(title=dict(text='Loss'))
 
     

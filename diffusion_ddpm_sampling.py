@@ -41,7 +41,7 @@ class DDPM_Sampler(nn.Module):
         sample = torch.randn(n_samples, *data_dim).to(device)
         timesteps = torch.arange(self.n_timestep_smpl-1, -1, -1)
         intermediate_smpl = np.empty([self.n_timestep_smpl+1, n_samples, *data_dim[::-1]])
-        intermediate_smpl[-1] = sample.permute(0, 2, 3, 1).cpu()
+        intermediate_smpl[-1] = denormalize(sample.cpu().numpy())
         
         noises = np.empty([self.n_timestep_smpl, n_samples, *data_dim[::-1]])
         nois_norm_list = []
@@ -356,7 +356,7 @@ if __name__=='__main__':
 
     ddpm = DDPM_Sampler(model=model, dataloader=None, betas=betas, n_timestep_smpl=n_timestep_smpl, expr_id=expr_id)
     print(f'\n {expr_id}\n')
-    ddpm.sampling(n_samples=n_samples, data_dim=data_dim, normalize=params.normalize, scaler=scaler, params=params, device=device)
+    ddpm.sampling(n_samples=n_samples, data_dim=data_dim, params=params, device=device)
 
 
 
