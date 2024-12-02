@@ -101,7 +101,7 @@ def add_all_zeros_animation(df_sample, epoch_list, colors):
     
     px_anim_sample = px.imshow(df_sample.squeeze(), animation_frame=0, binary_string=True, binary_compression_level=4)
 
-    all_zero_sample_frames = [go.Frame(data=[smpl_frame.data[0].update(name='sample')]
+    all_zero_sample_frames = [go.Frame(data=[smpl_frame.data[0].update(name='sample', xaxis="x", yaxis="y")]
                                 , traces=[0], name=f'zero_epoch_{e}', group=f'all_zero')
                                             for e, smpl_frame in zip(epoch_list, px_anim_sample.frames)]
 
@@ -115,7 +115,7 @@ def add_epochs_animation_slider(df_intermediate_smpl_list, epoch_list, timesteps
 
         # last sample will be at the end of animation
         px_anime_sample = px.imshow(dfs.squeeze(), animation_frame=0, binary_string=True, binary_compression_level=4)
-        sample_frames = [go.Frame(data=[frame.data[0].update(name=f'sample_{e}', visible=True) ], 
+        sample_frames = [go.Frame(data=[frame.data[0].update(name=f'sample_{e}', visible=True, xaxis="x", yaxis="y") ], 
                                      traces=[1+i], name=f'frame_{e}_{t}', group=f'epoch_{e}')  
                                      for t, frame in zip(timesteps_list, px_anime_sample.frames)]
 
@@ -126,13 +126,13 @@ def add_epochs_animation_slider(df_intermediate_smpl_list, epoch_list, timesteps
 def add_data_trace(fig, df_data):
 
     # data
-    fig.add_trace(px.imshow(df_data.squeeze(), binary_string=True).data[0].update(name='data', visible=False))
+    fig.add_trace(px.imshow(df_data.squeeze(), binary_string=True).data[0].update(name='data', xaxis="x", yaxis="y", visible=False))
     
     gray = df_data.squeeze()
     rgb = np.stack([gray, gray, gray], axis=-1)
     alpha = np.full(gray.shape, 25, dtype=np.uint8)  # 255 Fully opaque
     rgba = np.concatenate([rgb, alpha[..., None]], axis=-1)
-    fig.add_trace(px.imshow(rgba, binary_string=True).data[0].update(name='data_transparnce', visible=False))
+    fig.add_trace(px.imshow(rgba, binary_string=True).data[0].update(name='data_transparnce', xaxis="x", yaxis="y", visible=False))
     
     return fig
 
@@ -142,33 +142,35 @@ def add_sample_trace(fig, all_zero_sample_frames, animation_list, epoch_list):
     fig.add_trace(all_zero_sample_frames[0].data[0].update(name=f'sample', visible=True))
     # sample trace of all epoch in epoch_list
     for e, anim in zip(epoch_list, animation_list):
-        fig.add_trace(anim[0].data[0].update(name=f'sample_{e}')).update_traces(visible=False, selector=dict(name=f'sample_{e}'))
+        fig.add_trace(anim[0].data[0].update(name=f'sample_{e}')).update_traces(visible=False, xaxis="x", yaxis="y", selector=dict(name=f'sample_{e}'))
 
     return fig
 
-def add_statistics_to_fig(fig, df_loss_itr, df_loss):
+def add_statistics_to_fig(fig, df_loss_itr, df_loss, xaxis='x2', yaxis='y2'):
 
     # add traces of statistics
   
     x = df_loss_itr['itr']
     y = (np.cumsum(df_loss_itr['loss_itr']) / x)
     y[0] = df_loss_itr['loss_itr'][0]
-    fig.add_trace(go.Scatter(x=x, y=df_loss_itr['loss_itr'], name="Loss", yaxis="y",mode='lines', visible=False, showlegend=True, line=dict(width=1, color='limegreen')))
-    fig.add_trace(go.Scatter(x=x, y=y, name="Loss mean", mode='lines', yaxis="y", visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
+    fig.add_trace(go.Scatter(x=x, y=df_loss_itr['loss_itr'], name="Loss", xaxis=xaxis, yaxis=yaxis, mode='lines', visible=False, showlegend=True, line=dict(width=1, color='limegreen')))
+    fig.add_trace(go.Scatter(x=x, y=y, name="Loss mean", mode='lines', xaxis=xaxis, yaxis=yaxis, visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
     
     x = df_loss['epoch']
     y = (np.cumsum(df_loss['loss_epoch']) / x)
     y[0] = df_loss['loss_epoch'][0]
-    fig.add_trace(go.Scatter(x=x, y=df_loss['loss_epoch'], name='Loss', yaxis="y", mode='lines', visible=False, showlegend=True, line=dict(width=1, color='limegreen'))) # lightsalmon
-    fig.add_trace(go.Scatter(x=x, y=y, name='Loss mean' , mode='lines', yaxis="y", visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
-    fig.update_layout(title=dict(text='Loss'))
+    fig.add_trace(go.Scatter(x=x, y=df_loss['loss_epoch'], name='Loss', xaxis=xaxis, yaxis=yaxis, mode='lines', visible=False, showlegend=True, line=dict(width=1, color='limegreen'))) # lightsalmon
+    fig.add_trace(go.Scatter(x=x, y=y, name='Loss mean' , mode='lines', xaxis=xaxis, yaxis=yaxis, visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
+    
+    # fig.add_trace(go.Scatter(x=np.arange(100), y=np.arange(100), name='Line' , mode='lines', xaxis=xaxis, yaxis=yaxis, visible=False, showlegend=False, line=dict(width=2, color='red')))
+  
 
     return fig
 
-def add_smpl_grads_or_noises_info_to_fig(fig, df_grads_or_noises_info, timesteps_list, epoch_list):
+def add_smpl_grads_or_noises_info_to_fig(fig, df_grads_or_noises_info, timesteps_list, epoch_list, xaxis='x2', yaxis='y2'):
     x = timesteps_list
     for e, df in zip(epoch_list, df_grads_or_noises_info):
-        fig.add_trace(go.Scatter(x=x, y=df['sample_noise_norm'], name=f"norm_{e}", mode='lines+markers', visible=False, showlegend=True, line=dict(width=1.5)))   
+        fig.add_trace(go.Scatter(x=x, y=df['sample_noise_norm'], name=f"norm_{e}", xaxis=xaxis, yaxis=yaxis, mode='lines+markers', visible=False, showlegend=True, line=dict(width=1.5)))   
     return fig
 
 def visibility_traces(fig, epoch_list):
@@ -189,7 +191,8 @@ def visibility_traces(fig, epoch_list):
     #  'norm_50', 'norm_100', 'norm_150', 'norm_200', 'norm_250', 'norm_300', 'norm_350', 'norm_400', 'norm_450', 
     #  'norm_500', 'norm_550', 'norm_600', 'norm_650', ...]
 
-
+    
+    # trace_visibility['Line'] = True
     trace_vis_loss_itr = trace_visibility.copy()
     trace_vis_loss_itr.update({f'Loss': True, f'Loss mean': True, 'data': False})
     trace_vis_loss_epoch = trace_visibility.copy()
@@ -246,8 +249,18 @@ def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_
     all_zero_slider.update(slider_info)
 
     visibility_layout = {'title': f'All zeros', 'height': 570}
-    visibility_layout.update({'xaxis': {'range': None, 'autorange': True, 'title': '', 'showgrid': False, 'showticklabels': False},
-                            'yaxis': {'range': None, 'autorange': 'reversed', 'title': '', 'showgrid': False, 'showticklabels': False, 'type': 'linear'}})
+    # visibility_layout.update({
+    #                     'xaxis':  {'range': None, 'autorange': True, 'title': 'x1', 'showgrid': False,'showticklabels': False},
+    #                     'yaxis':  {  'range': None, 'autorange': 'reversed', 'title': 'y1', 'showgrid': False,'showticklabels': False},
+    #                     'xaxis2': {'range': None, 'autorange': True, 'title': 'x2', 'showgrid': False,'showticklabels': False},
+    #                     'yaxis2': {  'range': None, 'autorange': True, 'title': ' y2', 'showgrid': False,'showticklabels': False},
+    #                     })
+    visibility_layout.update({
+                                'xaxis':  {'visible': True, }, #'visible': True,  'overlaying':'x' 'overlaying':None 'domain': [0, 1], 
+                                'yaxis':  {'visible': True, }, #'visible': True,  'overlaying':'y' 'overlaying':None 'domain': [0, 1], 
+                                'xaxis2': {'visible': False,}, #'visible': False, 'overlaying':'x' 'overlaying':None 'domain': [0, 0], 
+                                'yaxis2': {'visible': False,}  #'visible': False, 'overlaying':'y' 'overlaying':None 'domain': [0, 0], 
+                                })
     visibility_layout.update(button_visibility)
     
     visibility_layout[f'updatemenus[0].visible'] = True # show play zeros buttons
@@ -293,16 +306,23 @@ def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_
 
     return play_button_list, select_button_list, all_zero_slider
 
-def add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, n_button_animations, button_info, method,
+def add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, n_button_animations, button_info, method, 
                       back_stats_idx, pause_idx, select_dropdown_idx):
 
     # Show all stats buttons (loss, score)
     stats_button_list = []
     show_stats = {'title': method, 'width':1000, 'height': 450, 'plot_bgcolor': None, 
-                    'xaxis': {'range': None, 'autorange': True, 'title': 'x', 'showgrid': True,'showticklabels': True},
-                    'yaxis': {'range': None, 'autorange': True, 'title': 'y', 'showgrid': True,'showticklabels': True, 
-                               'type': 'log'} # 'tickmode': 'auto', 'ntick':10,  'tickmode': 'linear', 'dtick':0.1, 'tick0': 0,
+                        # 'xaxis2': {'range': None, 'autorange': True, 'title': 'x', 'showgrid': True,'showticklabels': True},
+                        # 'yaxis2': {'range': None, 'autorange': True, 'title': 'y', 'showgrid': True,'showticklabels': True},
+                        # 'xaxis':  {'range': None, 'autorange': True, 'title': ' ', 'showgrid': False,'showticklabels': False},
+                        # 'yaxis':  {'range': None, 'autorange': True, 'title': ' ', 'showgrid': False,'showticklabels': False},
                         }
+    show_stats.update({
+                                'xaxis':  {'visible': False,  }, #'overlaying':'x', 'domain': [0, 0.5], 
+                                'yaxis':  {'visible': False,  }, #'overlaying':'y', 'domain': [0, 1]  , 
+                                'xaxis2': {'visible': True, }, #'overlaying':'x', 'domain': [0.5, 1], 
+                                'yaxis2': {'visible': True, }  #'overlaying':'y', 'domain': [0, 1]  , 
+                                })
     show_stats['sliders'] = []
     show_stats.update(button_visibility) 
     show_stats[f'updatemenus[{back_stats_idx}].visible'] = True
@@ -332,10 +352,12 @@ def add_sampling_grad_noise_norm_button(button_visibility, smpl_grad_noise_trace
                                         pause_idx, select_dropdown_idx, quiver_name='grad'):
 
     # Show sample score (validation) 
-    show_smpl_grd_ns = {'title': f'Sample {quiver_name} norm', 'width':1000, 'height': 450, 'plot_bgcolor': None,
-                    'xaxis': {'range': None, 'autorange': True, 'title': 'x', 'showgrid': True,'showticklabels': True},
-                    'yaxis': {'range': None, 'autorange': True, 'title': 'y', 'showgrid': True,'showticklabels': True, 'type': 'log'},
-                        }
+    show_smpl_grd_ns = {'title': f'Sample {quiver_name} norm', 'width':1000, 'height': 450, 'plot_bgcolor': None, 
+                        # 'xaxis2': {'visible': True, 'range': None, 'autorange': True, 'title': 'x', 'showgrid': True,'showticklabels': True},
+                        # 'yaxis2': {'visible': True, 'range': None, 'autorange': True, 'title': 'y', 'showgrid': True,'showticklabels': True},
+                        # 'xaxis': {'visible': False, 'range': None, 'autorange': True, 'title': ' ', 'showgrid': False,'showticklabels': False},
+                        # 'yaxis': {'visible': False, 'range': None, 'autorange': True, 'title': ' ', 'showgrid': False,'showticklabels': False},
+                            }
     
     show_smpl_grd_ns.update(button_visibility) 
     show_smpl_grd_ns[f'updatemenus[{back_smpl_grad_noise_norm_idx}].visible'] = True
@@ -356,9 +378,8 @@ def add_data_button(button_visibility, trace_visibility, pause_idx):
     
     # Show data
     show_data = {'title': f'Data', 'height': 500} 
-    show_data.update({  'xaxis': {'title': '', 'showticklabels': False, 'autorange':True, 'range': None}, 
-                        'yaxis': {'title': '', 'showticklabels': False, 'autorange':'reversed', 'range': None}
-                        })
+    show_data.update({'xaxis.showticklabels': False, 'yaxis.showticklabels': False, 'xaxis.title': '', 'yaxis.title': '',
+                        'xaxis.autorange':True, 'yaxis.autorange':'reversed'})
             
     show_data['sliders'] = []
     show_data.update(button_visibility) 
@@ -396,9 +417,9 @@ def add_detail_button(trace_visibility, button_visibility, config, back_detail_i
             title_text += rf" & \text{{{key}}}  \quad & = \quad & \text{{{value}}}  \\ "
     title_text += r"\end{aligned}$"  # End LaTeX block
     show_detail['title.text'] = title_text    
-    show_detail.update({'margin.t':100, 'title.y': 0.6, 'title.x':0.2,
-                        'xaxis': {'title': '', 'showticklabels': False, 'range': [-2.5, 2.5]}, 
-                        'yaxis': {'title': '', 'showticklabels': False, 'range': [-2.5, 2.5]}
+    show_detail.update({'margin.t':100, 'title.y': 0.6, 'title.x':0.2, 'xaxis.range': [-2.5, 2.5], 'yaxis.range': [-2.5, 2.5], 
+                            'xaxis.title': '', 'yaxis.title': '',# 'xaxis.tickvals': [], 'yaxis.tickvals': [], 
+                            'xaxis.showticklabels': False, 'yaxis.showticklabels': False
                             }) 
     show_detail.update(dict(plot_bgcolor='white', height=450))
     hide_traces = trace_visibility.copy()
@@ -412,11 +433,18 @@ def add_detail_button(trace_visibility, button_visibility, config, back_detail_i
 def add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_info, method,
                      back_detail_idx, stats_idx, back_smpl_score_idx, select_dropdown_idx, back_stats_idx):
 
-    hide_info = {'margin.t': 60, 'title.y': 0.98, 'title.x':0.001, 'plot_bgcolor': 'white', 'width':750, 'height': 500,
-                'xaxis': {'range': None, 'autorange': True, 'title': '', 'showgrid': False, 'showticklabels': False},
-                'yaxis': {'range': None, 'autorange': 'reversed', 'title': '', 'showgrid': False, 'showticklabels': False, 'type': 'linear'},
+    hide_info = {'margin.t': 60, 'title.y': 0.98, 'title.x':0.001, 'plot_bgcolor': None, 'width':750, 'height': 500,
+                # 'xaxis': { 'range': None, 'autorange': True, 'title': ' ', 'showgrid': True, 'showticklabels': False},
+                # 'yaxis': { 'range': None, 'autorange': 'reversed', 'title': ' ', 'showgrid': True, 'showticklabels': False},
+                # 'xaxis2': {'range': None, 'autorange': True, 'title': ' ', 'showgrid': False, 'showticklabels': False},
+                # 'yaxis2': {'range': None, 'autorange': True, 'title': ' ', 'showgrid': False, 'showticklabels': False},
                 }
-
+    hide_info.update({
+                    'xaxis':  {'visible': True, }, #'domain': [0, 0.5]  'overlaying':'x', 
+                    'yaxis':  {'visible': True, }, #'domain': [0, 1]    'overlaying':'y', 
+                    'xaxis2': {'visible': False,}, #'domain': [0.5, 1]  'overlaying':'x', 
+                    'yaxis2': {'visible': False,}  #'domain': [0, 1]    'overlaying':'y', 
+                                })
     slider_steps = dict(steps=[dict(args=[[None]], method='animate', label=f'{j}' ) for j in range(2)])
     slider_steps.update(slider_info)
     slider_steps.update({'currentvalue': dict(font_size=12, prefix= f'', xanchor='left')})
@@ -626,10 +654,27 @@ def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list
     # Update layout for better aesthetics
     # scaleanchor='y', scaleratio=1,
     # scaleanchor='x', scaleratio=1,
+    # 'xaxis.domain'=[0.0, 1.0] , 'xaxis.anchor'='y2'    
     fig.update_layout(
         title=dict(text=method, pad={"r": 10, "t": 10, "l": 20, "b":10}, x=0.001, xanchor="left", y=0.98, yanchor="top"),
-        xaxis=dict(title=dict(text=" ", font_size=12), showgrid=True, autorange=True),  #  range=range_x, 
-        yaxis=dict(title=dict(text=" ", font_size=12), showgrid=True, autorange='reversed'),  #  range=range_y, 
+        xaxis=dict(title=dict(text="x1", font_size=12), showgrid=True, autorange=True, anchor='y',
+                   domain=[0, 1], 
+                   ),  #  range=range_x, 
+        xaxis2=dict(title=dict(text="x2", font_size=12), showgrid=True, autorange=True, anchor='y2',  
+                    showticklabels=True, visible=True,
+                    domain=[0, 1], 
+                    # overlaying='x',
+                    overlaying=None,
+                    ),
+        yaxis=dict(title=dict(text="y1", font_size=12), showgrid=True, autorange='reversed', anchor='x',
+                   domain=[0, 1],
+                   ),  #  range=range_y, 
+        yaxis2=dict(title=dict(text="y2", font_size=12), showgrid=True, autorange=True, anchor='x2',  
+                    showticklabels=True, visible=True,
+                    domain=[0, 1], 
+                    # overlaying='y',  
+                    overlaying=None, 
+                    ),
         # plot_bgcolor='rgba(100, 100, 100, 0)',
         margin=dict(l=80, t=60, b=20, r=150),
         showlegend=True,
