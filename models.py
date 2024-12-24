@@ -504,7 +504,7 @@ class BoostingOne(nn.Module):          #prediction goal: noise of ddpm or grad o
 
 class BasicUNet(nn.Module):                         # 02_diffusion_models_from_scratch
     """A minimal UNet implementation."""
-    def __init__(self, in_channels=1, out_channels=1):
+    def __init__(self, in_channels=1, out_channels=1, base_channel=32, depth=2, time_emb_dim=1):
         super().__init__()
         self.down_layers = torch.nn.ModuleList([
             nn.Conv2d(in_channels, 32, kernel_size=5, padding=2),
@@ -520,7 +520,7 @@ class BasicUNet(nn.Module):                         # 02_diffusion_models_from_s
         self.downscale = nn.MaxPool2d(2)
         self.upscale = nn.Upsample(scale_factor=2)
 
-    def forward(self, x):
+    def forward(self, x, t):
         h = []
         for i, l in enumerate(self.down_layers):
             x = self.act(l(x)) # Through the layer and the activation function
@@ -534,9 +534,42 @@ class BasicUNet(nn.Module):                         # 02_diffusion_models_from_s
               x += h.pop() # Fetching stored output (skip connection)
             x = self.act(l(x)) # Through the layer and the activation function
 
-        return x    
+        return x  
 
-class UNetMNIST(nn.Module):
+
+def conv_block(in_channels, out_channels, num_groups=8, dropout=False, cbt='simple'):    
+    
+    if cbt=='simple':
+        """Basic convolutional block"""
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+    if cbt=='with_batch_norm':
+        """BatchNorm convolutional block"""
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(inplace=True)
+        )
+    elif cbt=='with_group_norm':
+        """Advanced convolutional block with optional dropout."""
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups, out_channels),
+            nn.GELU(),
+            nn.Dropout(0.1 if dropout else 0),  # Add dropout with a probability of 0.1
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups, out_channels),
+            nn.GELU()
+        )
+ 
+class UNetMNIST_old(nn.Module):
     def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16):
         super().__init__()
         
@@ -546,22 +579,23 @@ class UNetMNIST(nn.Module):
         else:
             self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
         layers_num = np.arange(0, depth)
+        #hidden_channel =  [base_channel*2**i for i in layers_num]
         self.encoder = nn.ModuleList([
-            nn.Sequential(nn.Conv2d(in_channels + time_emb_dim, base_channel, kernel_size=3, padding=1), nn.ReLU())] +
-            [nn.Sequential(nn.Conv2d(base_channel*2**i, base_channel*2**(i+1), kernel_size=3, padding=1), nn.ReLU()) for i in layers_num[:-1]])
+            nn.Sequential(nn.Conv2d(in_channels + time_emb_dim, base_channel, kernel_size=3, padding=1), nn.ReLU(inplace=True))] +
+            [nn.Sequential(nn.Conv2d(base_channel*2**i, base_channel*2**(i+1), kernel_size=3, padding=1), nn.ReLU(inplace=True)) for i in layers_num[:-1]])
         
         self.downsample = nn.MaxPool2d(2) 
         
-        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(layers_num[-1]), base_channel*2**(layers_num[-1]+1), kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(layers_num[-1]), base_channel*2**(layers_num[-1]+1), kernel_size=3, padding=1), nn.ReLU(inplace=True))
         
         self.decoder = nn.ModuleList(
-            [nn.Sequential(nn.Conv2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=3, padding=1), nn.ReLU()) for i in layers_num[::-1]])
+            [nn.Sequential(nn.Conv2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=3, padding=1), nn.ReLU(inplace=True)) for i in layers_num[::-1]])
         
         self.upsample = nn.ModuleList([
-            nn.Sequential(nn.ConvTranspose2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=2, stride=2), nn.ReLU()) for i in layers_num[::-1]])
+            nn.Sequential(nn.ConvTranspose2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=2, stride=2), nn.ReLU(inplace=True)) for i in layers_num[::-1]])
         
         
-        self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=1), nn.Sigmoid())
+        self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=1), nn.Tanh())
 
     def forward(self, x, t):
 
@@ -585,6 +619,67 @@ class UNetMNIST(nn.Module):
 
         return self.out(x)
 
+class UNetMNIST(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, conv_block_type='simple'):
+        super().__init__()
+        
+        # Time Embedding
+        # self.time_embedding = nn.Embedding(1000, time_emb_dim)
+        if time_emb_dim == 1:
+            self.time_pos_enc = nn.Identity()
+        else:
+            self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
+        layers_num = np.arange(0, depth)
+        # hidden_channels =  [in_channels] + [base_channel*2**i for i in layers_num]
+        # Encoder
+        self.encoder = nn.ModuleList()
+        self.downsample = nn.ModuleList()
+        in_channels += time_emb_dim
+        for i in range(depth):
+            self.encoder.append(conv_block(in_channels, base_channel * 2 ** i, cbt=conv_block_type))
+            self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, kernel_size=4, stride=2, padding=1))
+            in_channels = base_channel * 2 ** i
+
+            # self.downsample.append(nn.MaxPool2d(2))
+        
+        # Bottleneck
+        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(layers_num[-1]), base_channel*2**(layers_num[-1]+1), 
+                                                  kernel_size=3, padding=1), nn.LeakyReLU(inplace=True))
+        # Decoder
+        self.decoder = nn.ModuleList()
+        self.upsample = nn.ModuleList()
+        for i in range(depth - 1, -1, -1):
+            self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** i, kernel_size=4, stride=2, padding=1))
+            self.decoder.append(conv_block(base_channel * 2 ** (i + 1), base_channel * 2 ** i, cbt=conv_block_type))
+
+        self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=1), nn.Tanh())
+
+    def forward(self, x, t):
+
+        t_emb = self.time_pos_enc(t) 
+                            # [B, time_emb_dim, 1, 1]  # Expand to match spatial dimensions
+        t_emb = t_emb.view(-1, t_emb.shape[1], 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
+        
+        # Add time embedding to input
+        x = torch.cat((x, t_emb), dim=1)
+
+        encoder_outputs = []
+        for enc, down in zip(self.encoder, self.downsample):
+            x = enc(x)
+            encoder_outputs.append(x)
+            x = down(x)
+            
+        x = self.bottleneck(x)
+
+        for up, dec in zip(self.upsample, self.decoder):
+
+            skip_connection = encoder_outputs.pop()
+            x = up(x)
+            x = torch.cat((x, skip_connection), dim=1)
+            x = dec(x)          
+
+        return self.out(x)
+
 
 class UNetCIFAR10(nn.Module):
     def __init__(self, in_channels=3, out_channels=3, base_channel=16, depth=4, time_emb_dim=16):
@@ -594,18 +689,18 @@ class UNetCIFAR10(nn.Module):
         self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
         layers_num = np.arange(0, depth)
         self.encoder = nn.ModuleList([
-            nn.Sequential(nn.Conv2d(in_channels + time_emb_dim, base_channel, kernel_size=3, padding=1), nn.ReLU())] +
-            [nn.Sequential(nn.Conv2d(base_channel*2**i, base_channel*2**(i+1), kernel_size=3, padding=1), nn.ReLU()) for i in layers_num[:-1]])
+            nn.Sequential(nn.Conv2d(in_channels + time_emb_dim, base_channel, kernel_size=3, padding=1), nn.ReLU(inplace=True))] +
+            [nn.Sequential(nn.Conv2d(base_channel*2**i, base_channel*2**(i+1), kernel_size=3, padding=1), nn.ReLU(inplace=True)) for i in layers_num[:-1]])
         
         self.downsample = nn.MaxPool2d(2) 
         
-        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(layers_num[-1]), base_channel*2**(layers_num[-1]+1), kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(layers_num[-1]), base_channel*2**(layers_num[-1]+1), kernel_size=3, padding=1), nn.ReLU(inplace=True))
         
         self.decoder = nn.ModuleList(
-            [nn.Sequential(nn.Conv2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=3, padding=1), nn.ReLU()) for i in layers_num[::-1]])
+            [nn.Sequential(nn.Conv2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=3, padding=1), nn.ReLU(inplace=True)) for i in layers_num[::-1]])
         
         self.upsample = nn.ModuleList([
-            nn.Sequential(nn.ConvTranspose2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=2, stride=2), nn.ReLU()) for i in layers_num[::-1]])
+            nn.Sequential(nn.ConvTranspose2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=2, stride=2), nn.ReLU(inplace=True)) for i in layers_num[::-1]])
         
         
         self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=1), nn.Tanh())
@@ -642,11 +737,11 @@ class Discriminator(nn.Module):
 
         layers_num = np.arange(0, depth)
         self.encoder = nn.ModuleList([
-            nn.Sequential(nn.Conv2d(in_channels, base_channel, kernel_size=3, padding=1), nn.ReLU())] +
-            [nn.Sequential(nn.Conv2d(base_channel*2**i, base_channel*2**(i+1), kernel_size=3, padding=1), nn.ReLU()) for i in layers_num[:-1]])
+            nn.Sequential(nn.Conv2d(in_channels, base_channel, kernel_size=3, padding=1), nn.ReLU(inplace=True))] +
+            [nn.Sequential(nn.Conv2d(base_channel*2**i, base_channel*2**(i+1), kernel_size=3, padding=1), nn.ReLU(inplace=True)) for i in layers_num[:-1]])
         
         self.downsample = nn.MaxPool2d(2)
-        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(layers_num[-1]), base_channel*2**(layers_num[-1]+1), kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(layers_num[-1]), base_channel*2**(layers_num[-1]+1), kernel_size=3, padding=1), nn.ReLU(inplace=True))
         self.x_dim = data_dim // 2**(layers_num[-1]+1)
         self.out = nn.Sequential(nn.Linear(in_features=base_channel*2**(layers_num[-1]+1)*(self.x_dim**2), out_features=1), nn.Sigmoid())
 
@@ -666,13 +761,13 @@ class Generator(nn.Module):
 
         layers_num = np.arange(0, depth)
 
-        self.bottleneck = nn.Sequential(nn.Conv2d(in_channels, base_channel*2**(layers_num[-1]+1), kernel_size=3, padding=1), nn.ReLU())
+        self.bottleneck = nn.Sequential(nn.Conv2d(in_channels, base_channel*2**(layers_num[-1]+1), kernel_size=3, padding=1), nn.ReLU(inplace=True))
         
         self.decoder = nn.ModuleList(
-            [nn.Sequential(nn.Conv2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=3, padding=1), nn.ReLU()) for i in layers_num[::-1]])
+            [nn.Sequential(nn.Conv2d(base_channel*2**(i+1), base_channel*2**i, kernel_size=3, padding=1), nn.ReLU(inplace=True)) for i in layers_num[::-1]])
         
         self.upsample = nn.ModuleList([
-            nn.Sequential(nn.ConvTranspose2d(base_channel*2**(i+1), base_channel*2**(i+1), kernel_size=2, stride=3), nn.ReLU()) for i in layers_num[::-1]])
+            nn.Sequential(nn.ConvTranspose2d(base_channel*2**(i+1), base_channel*2**(i+1), kernel_size=2, stride=3), nn.ReLU(inplace=True)) for i in layers_num[::-1]])
         
         
         self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=1), nn.Tanh())
@@ -692,21 +787,28 @@ class Generator(nn.Module):
         return self.out(x)
 
 class GAN(nn.Module):
-    def __init__(self, in_channels=8, out_channels=1, base_channel=16, data_dim=32, depth=2, device='cuda'):
+    def __init__(self, z_dim=8, in_channels=8, out_channels=1, base_channel=16, data_dim=32, depth=2, device='cuda'):
         super().__init__()
 
-        self.generator = Generator(in_channels=in_channels, base_channel=base_channel, data_dim=data_dim, depth=depth)
-        self.discriminator = Discriminator(in_channels=in_channels, out_channels=out_channels, base_channel=base_channel, depth=depth)
+        self.generator = Generator(in_channels=z_dim, out_channels=out_channels, base_channel=base_channel, depth=depth) #
+        self.discriminator = Discriminator(in_channels=in_channels, base_channel=base_channel, data_dim=data_dim, depth=depth)
 
 
 
-def select_model_diffusion(model_info, data_dim, time_dim, n_timesteps, device='cuda'):
+def select_model_diffusion(model_info, time_dim, n_timesteps, data_dim=None,device='cuda'):
     
     model_info = model_info.split('_')
     model_name = model_info[0]
-    num_hidden = int(model_info[1])
-    hidden_dim = int(model_info[2])
-
+    num_hidden, hidden_dim = 1, 1
+    if len(model_info) > 1:
+        num_hidden = int(model_info[1])
+        hidden_dim = int(model_info[2])
+        conv_block_type = 'simple'
+        if len(model_info)==4:
+            if model_info[3]=='BN':
+                conv_block_type =  'with_batch_norm' 
+            elif model_info[3]=='GN':
+                conv_block_type =  'with_group_norm' 
 
     if model_name=='DDPM':
         return DDPM(data_dim=data_dim, time_dim=time_dim, hidden_dim=hidden_dim, num_hidden=num_hidden, total_timesteps=n_timesteps, device=device)
@@ -724,8 +826,10 @@ def select_model_diffusion(model_info, data_dim, time_dim, n_timesteps, device='
         return FlowMatching(data_dim=data_dim, time_dim=time_dim, hidden_dim=hidden_dim, num_hidden=num_hidden, total_timesteps=n_timesteps, device=device)
     elif model_name=='BoostingOne':
         return BoostingOne(data_dim=data_dim, time_dim=time_dim, hidden_dim=hidden_dim, num_hidden=num_hidden, total_timesteps=n_timesteps, device=device)
-    elif model_name=='UNetMNIST':
+    elif model_name=='BasicUNet':
         return UNetMNIST(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, time_emb_dim=time_dim)
+    elif model_name=='UNetMNIST':
+        return UNetMNIST(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, time_emb_dim=time_dim, conv_block_type=conv_block_type)
     elif model_name=='UNetCIFAR10':
         return UNetCIFAR10(in_channels=3, out_channels=3, base_channel=hidden_dim, depth=num_hidden, time_emb_dim=time_dim)
 
@@ -735,10 +839,10 @@ def select_model_gan(model_info, data_dim, z_dim, device='cuda'):
     num_hidden = int(model_info[1])
     hidden_dim = int(model_info[2])
     
-    if model_name=='GANMnist':
-        return GAN(in_channels=z_dim, out_channels=1, base_channel=hidden_dim, data_dim=data_dim, depth=num_hidden,device=device)
+    if model_name=='GANMNIST':
+        return GAN(z_dim=z_dim, in_channels=1, out_channels=1, base_channel=hidden_dim, data_dim=data_dim, depth=num_hidden,device=device)
     if model_name=='GANCIFAR10':
-        return GAN(in_channels=z_dim, out_channels=3, base_channel=hidden_dim, data_dim=data_dim, depth=num_hidden,device=device)
+        return GAN(z_dim=z_dim, in_channels=3, out_channels=3, base_channel=hidden_dim, data_dim=data_dim, depth=num_hidden,device=device)
     
 
 
@@ -772,13 +876,20 @@ if __name__=='__main__':
     te_org.shape, te.shape
 
     # Test the model
-    mnist_model = UNetMNIST().to('cuda')
+    mnist_model = UNetMNIST(base_channel=16, depth=2).to('cuda')
     x_mnist = torch.randn(4, 1, 32, 32).to('cuda')  # Example MNIST batch
     # Should output a tensor with shape [4, 1, 28, 28]
     output_mnist = mnist_model(x_mnist, torch.tensor([2, 3, 4, 5], device='cuda').view(4, -1)) 
 
     print(f"MNIST output shape: {output_mnist.shape}")
 
+    # Test the model
+    mnist_model = BasicUNet().to('cuda')
+    x_mnist = torch.randn(4, 1, 32, 32).to('cuda')  # Example MNIST batch
+    # Should output a tensor with shape [4, 1, 28, 28]
+    output_mnist = mnist_model(x_mnist) 
+
+    print(f"MNIST output shape: {output_mnist.shape}")
     
 
     # Test the model

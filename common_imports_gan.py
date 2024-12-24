@@ -29,6 +29,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
+    torch.use_deterministic_algorithms(True)
     # if run_float64: torch.set_default_dtype(torch.float64)
     torch.set_default_dtype(torch.float64) if run_float64 else torch.set_default_dtype(torch.float32)
 

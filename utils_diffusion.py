@@ -65,7 +65,7 @@ def save_config_json(save_dir, params, expr_id):
                     'time_dim': params.time_dim,
                     'data_dim': params.data_dim,
                     'batch_size': params.batch_size,
-                    'total_size': params.total_size,
+                    # 'total_size': params.total_size,
                     'normalize': params.normalize,
                     'n_epoch': params.n_epoch,
                     'lr': params.lr,
@@ -127,18 +127,18 @@ def construct_image_grid(n_timestep, images):
 
     return new_img_data
 
-def create_hdf_file_training(save_dir, expr_id, dataset, n_timestep_smpl, n_sel_time, grid_size, n_samples):
+def create_hdf_file_training(save_dir, expr_id, dataset, n_timestep_smpl, n_sel_time, n_samples, resume_training=False):
             
     p = Path(save_dir)
     path_save = p / 'saved_hdfs_training' 
     path_save.mkdir(parents=True, exist_ok=True)
     file_loss = str(path_save) + f'/{expr_id}_df_loss_per_epoch.h5'
     file_sample = str(path_save) + f'/{expr_id}_df_sample_per_epoch.h5'
-    # file_sample_zero_all = str(path_save) + f'/{expr_id}_df_sample_zero_per_epoch.h5'
-    df_loss_per_epoch = pd.DataFrame(columns=['epoch', 'itr', 't', 'loss_itr', 'loss_epoch'])
-    # df_samples_per_epoch = pd.DataFrame(columns=['epoch', 'data_x', 'data_y', 'intermediate_samples_x', 'intermediate_samples_y'])
+
+    if resume_training:
+        return file_loss, file_sample
     
-    if dataset.shape[0] > n_samples:
+    if dataset.shape[0] > 36:
         dataset = dataset[np.linspace(0, dataset.shape[0]-1, 36, dtype=int), :, :, :]
 
     dataset = dataset.cpu().numpy()   # permute
@@ -158,35 +158,47 @@ def create_hdf_file_training(save_dir, expr_id, dataset, n_timestep_smpl, n_sel_
     
     with pd.HDFStore(file_sample, 'w') as hdf_store_samples:
         hdf_store_samples.append(key=f'df/data', value=dfs, format='t', data_columns=True)
-        hdf_store_samples.append(key=f'df/info', value=pd.DataFrame({'n_sel_time': [n_sel_time], 'grid_size':[grid_size], 
+        hdf_store_samples.append(key=f'df/info', value=pd.DataFrame({'n_sel_time': [n_sel_time],  
                                                                      'n_samples': [n_samples], 'image_shape': [str(new_data.shape[1:])[1:-1].replace(' ', '')]}), format='t')
+        
         hdf_store_samples.append(key=f'df/sampling_timesteps', value=pd.DataFrame({'time': sampling_timesteps}), format='t')
 
-    # with pd.HDFStore(file_sample_zero_all, 'w') as hdf_store_samples_zero:
-    #     hdf_store_samples_zero.append(key=f'df/data', value=dfs, format='t', data_columns=True)
-    #     hdf_store_samples_zero.append(key=f'df/info', value=pd.DataFrame({'n_samples': [n_samples], 'n_sel_time': [n_sel_time]}), format='t')
+    f = pd.HDFStore(file_loss, 'w')
+    f.close()
+    
+    return file_loss, file_sample
 
-    return file_loss, file_sample, df_loss_per_epoch
-
-def create_hdf_file(save_dir, expr_id, dataset, n_timestep_smpl, n_sel_time, n_samples, test_name=None):
+def create_hdf_file(save_dir, expr_id, dataset, n_timestep_smpl, n_sel_time, n_samples, train_name=None, test_name=None):
             
     p = Path(save_dir)
     path_save = p / 'saved_hdfs' 
     path_save.mkdir(parents=True, exist_ok=True)
+    
+    if train_name is not None:
+        expr_id += train_name 
+
     file_sample = str(path_save) +  (f'/{expr_id}_df_sample.h5' if test_name is None else f'/{expr_id}_df_sample_{test_name}.h5')
-    # df_samples_per_epoch = pd.DataFrame(columns=['epoch', 'data_x', 'data_y', 'intermediate_samples_x', 'intermediate_samples_y'])
-    data = dataset
-    if dataset.shape[0] > 2000:
-        data = dataset[np.linspace(0, dataset.shape[0]-1, 2000, dtype=int), :]
-    dfs = pd.DataFrame(data, columns=['data_x', 'data_y'])
-    # if dfs.shape[0] > 2000:
-    #     dfs = dfs.loc[np.linspace(0, dfs.shape[0]-1, 2000, dtype=int), :]
+
+    if dataset.shape[0] > 36:
+        dataset = dataset[np.linspace(0, dataset.shape[0]-1, 36, dtype=int), :, :, :]
+    dataset = dataset.cpu().numpy()   # permute
+    dataset = denormalize(dataset)
+    dataset = dataset[None, :, :, :, :]
+
+    new_data = construct_image_grid(1, dataset)    
+    # flat_img_len = np.prod(new_data.shape[1:])
+    data = {}
+    data[f'data_{0}'] = new_data[0].flatten()
+
+    dfs = pd.DataFrame(data)
     
     sampling_timesteps = select_steps(n_timestep_smpl+1, n_sel_time)
 
     with pd.HDFStore(file_sample, 'w') as hdf_store_samples:
         hdf_store_samples.append(key=f'df/data', value=dfs, format='t', data_columns=True)
-        hdf_store_samples.append(key=f'df/info', value=pd.DataFrame({'n_sel_time': [n_sel_time], 'n_samples': [n_samples]}), format='t')
+        hdf_store_samples.append(key=f'df/info', value=pd.DataFrame({'n_sel_time': [n_sel_time],  
+                                                                     'n_samples': [n_samples], 'image_shape': [str(new_data.shape[1:])[1:-1].replace(' ', '')]}), format='t')
+        
         hdf_store_samples.append(key=f'df/sampling_timesteps', value=pd.DataFrame({'time': sampling_timesteps}), format='t')
 
 

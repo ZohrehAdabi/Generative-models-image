@@ -94,12 +94,87 @@ def get_dataset_name(method, expr_id):
 
 
 
+def read_hdf_loss(file):
 
-def add_all_zeros_animation(df_sample, epoch_list, colors):
+    # df_loss = pd.read_hdf(file, key='df/loss')   
+    with pd.HDFStore(file) as df:
+        df_loss_epoch = df['df/loss_epoch']
+        df_loss_itr = df['df/loss_itr']
+    
+    # df_loss_itr['itr'] = np.arange(df_loss_itr.shape[0])
+
+    return df_loss_epoch.reset_index(drop=True), df_loss_itr.reset_index(drop=True)
+
+def read_hdf_all_epochs_train(file):
+
+    try:
+        hdf_file = pd.HDFStore(file)   
+        # print(smple.keys())
+        keys = hdf_file.keys()
+        # for k in keys:
+        #     print(k)
+        image_shape = hdf_file['/df/info']['image_shape'].values[0]
+        image_shape = list(map(int, image_shape.split(',')))
+        n_sel_time = hdf_file['/df/info']['n_sel_time'].values[0]
+
+        df_sample = []
+        df_grads_or_noises_info = pd.DataFrame()
+        # df_grad_or_noise_hist = []
+        # df_grad_g_z = pd.DataFrame()
+        # df_grad_g_z_at_sampling = pd.DataFrame()
+        df_fake_data = pd.DataFrame()
+        # df_intermediate_smpl = pd.DataFrame()
+        df_intermediate_smpl_list = []
+        df_grad_or_noise_grid_list = []
+        df_grad_or_noise_info_hist = []
+        epoch_list = []
+        for k in keys:
+            if 'samples' in k: 
+                smpl = hdf_file[k]['data_0'].to_numpy().reshape(image_shape)
+                df_sample.append(smpl)
+                if 'epoch_' in k:
+                    epoch_list.append(int(k.split('/')[2].split('_')[2]))
+            elif 'intermediate_smpl'in k:
+                # df_intermediate_smpl = pd.concat([df_intermediate_smpl if not df_intermediate_smpl.empty else None, hdf_file[k]])
+                
+                intmd_smple = hdf_file[k].iloc[:, 1:].to_numpy().T.reshape(n_sel_time, *image_shape)
+                df_intermediate_smpl_list.append(intmd_smple)
+            
+            # elif 'grad_info' in k or 'noise_info' in k:
+            #     df_grads_or_noises_info = pd.concat([df_grads_or_noises_info if not df_grads_or_noises_info.empty else None, hdf_file[k]])
+            elif 'grad_info' in k or 'noise_info' in k: # noise or grad predicted for of samples generated iteratively
+                df_grad_or_noise_info_hist.append(hdf_file[k])
+        
+            elif 'grad_grid' in k or 'noise_grid' in k:
+                # df_grad_g_z = pd.concat([df_grad_g_z if not df_grad_g_z.empty else None, hdf_file[k]])
+                intmd_gr_ns = hdf_file[k].iloc[:, 1:].to_numpy().T.reshape(n_sel_time, *image_shape)
+                df_grad_or_noise_grid_list.append(intmd_gr_ns)
+            
+
+        df_data = hdf_file['/df/data']
+        n_samples = hdf_file['/df/info']['n_samples'].values[0]
+        timesteps_list = hdf_file['/df/sampling_timesteps']['time'].to_numpy()
+        hdf_file.close()
+    except:
+        print(f'Error in reading hdf file {file}')
+        hdf_file.close()
+    df_data = df_data['data_0'].to_numpy().reshape(image_shape)
+    
+    if df_sample:
+        df_sample = np.stack(df_sample) 
+    if not epoch_list:
+        epoch_list = [0]
+
+    return df_sample, df_data, df_intermediate_smpl_list, df_grad_or_noise_info_hist, \
+            df_grad_or_noise_grid_list, epoch_list, timesteps_list, n_samples
+
+
+def add_all_zeros_animation(df_sample, epoch_list):
     # create frames for each animation [epochs], all zeros samples are in one df: df_sample
     
-    
-    px_anim_sample = px.imshow(df_sample.squeeze(), animation_frame=0, binary_string=True, binary_compression_level=4)
+    if df_sample.ndim == 3:
+        df_sample = df_sample[None, :, :, :]
+    px_anim_sample = px.imshow(df_sample.squeeze(-1), animation_frame=0, binary_string=True, binary_compression_level=4)
 
     all_zero_sample_frames = [go.Frame(data=[smpl_frame.data[0].update(name='sample')]
                                 , traces=[0], name=f'zero_epoch_{e}', group=f'all_zero')
@@ -204,13 +279,16 @@ def visibility_traces(fig, epoch_list):
 
     return trace_visibility, stats_trace_vis, smpl_grad_or_noise_norm_trace_vis
 
-def visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_statistics):
+def visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_statistics, just_loss=False, training=False):
 
     # store idx of other buttons that adding to the layout for making visible True or False
     
-    stats_idx = n_button_animations
+    stats_idx = n_button_animations 
     pause_idx = stats_idx + n_button_statistics
-    back_stats_idx = pause_idx + 1
+    if just_loss:
+        back_stats_idx = pause_idx 
+    else:
+        back_stats_idx = pause_idx + 1 if training else pause_idx
     back_detail_idx = back_stats_idx + 1
     back_smpl_grad_noise_norm_idx = back_detail_idx + 1
     select_dropdown_idx = back_smpl_grad_noise_norm_idx + 1 
@@ -219,26 +297,26 @@ def visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_stat
     button_visibility = {}
     for i in range(n_all_buttons):
         button_visibility[f'updatemenus[{i}].visible'] = False 
-    button_visibility[f'updatemenus[{pause_idx}].visible'] = True
+    button_visibility[f'updatemenus[{pause_idx}].visible'] = True if training else False
     button_visibility[f'updatemenus[{select_dropdown_idx}].visible'] = True
 
     return button_visibility, stats_idx, back_smpl_grad_noise_norm_idx, pause_idx, \
                 back_stats_idx, back_detail_idx, select_dropdown_idx
 
 def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_list, button_info, 
-                                 slider_info, frame_spec, epoch_list, quiver_name='grad'):
+                                 slider_info, frame_spec, epoch_list, training=False):
     
     play_button_list = []
     select_button_list = [] #drop down button
 
     # Play buttons for sampling
        
+    if training:
+        zero_play_button = dict(buttons=[dict(label=f"{f'&#9654; zeros':^16}", method='animate', args=[f'all_zero' , frame_spec])])
+        zero_play_button.update(button_info)
+        zero_play_button.update(dict(x=-0.22, y=0.001))
 
-    zero_play_button = dict(buttons=[dict(label=f"{f'&#9654; zeros':^16}", method='animate', args=[f'all_zero' , frame_spec])])
-    zero_play_button.update(button_info)
-    zero_play_button.update(dict(x=-0.22, y=0.001))
-
-    play_button_list.append(zero_play_button)
+        play_button_list.append(zero_play_button)
     # slider for zero play button
     
     all_zero_slider = dict(steps=[dict(args=[[f'zero_epoch_{e}'], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate' }], 
@@ -250,7 +328,7 @@ def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_
                             'yaxis': {'range': None, 'autorange': 'reversed', 'title': '', 'showgrid': False, 'showticklabels': False, 'type': 'linear'}})
     visibility_layout.update(button_visibility)
     
-    visibility_layout[f'updatemenus[0].visible'] = True # show play zeros buttons
+    visibility_layout[f'updatemenus[0].visible'] = True if training else False# show play zeros buttons in training
     
     visibility_layout['sliders'] = [all_zero_slider] 
     
@@ -258,18 +336,18 @@ def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_
     # add fist button to dropdwon 
     trace_vis_init = trace_visibility.copy()
     trace_vis_init.update({f'sample': True})
-    select_button_list.append(dict(label=f'Show all zeros', method='update', 
+    select_button_list.append(dict(label=f'Show all zeros' if training else 'Show zero sample ', method='update', 
                                 args=[{'visible': list(trace_vis_init.values())}, visibility_layout]))
 
     vis_layout = visibility_layout.copy()
-    vis_layout[f'updatemenus[0].visible'] = False
+    vis_layout[f'updatemenus[0].visible'] = False if training else True
    # add play buttons for all epochs
     for i, e in enumerate(epoch_list):
 
         slider_steps = dict(steps=[dict(args=[[f'frame_{e}_{t}'], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate' }], 
                                     method='animate', label=f'{t}' ) for t in timesteps_list])
         slider_steps.update(slider_info)
-        slider_steps.update({'currentvalue': dict(font_size=12, prefix= f'Epoch{e}: ', xanchor='left') , 'name': f'e_{e}'})
+        slider_steps.update({'currentvalue': dict(font_size=12, prefix= f'Epoch{e}: ' if training else 'Sampling: ', xanchor='left') , 'name': f'e_{e}'})
         
         play_button = dict(buttons=[dict(label=f"{f'&#9654; {e}':^20}", method='animate', args=[f'epoch_{e}', frame_spec])])
         play_button.update(button_info)
@@ -277,7 +355,7 @@ def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_
         play_button_list.append(play_button)
         vis = {}
         vis.update(vis_layout)
-        vis['title'] =  f'Epoch {e}'
+        vis['title'] =  f'Epoch {e}' if training else 'Sampling'
         vis[f'updatemenus[{i+1}].visible'] = True # first play button is for all zeros
         vis['sliders'] = [slider_steps]
 
@@ -285,7 +363,7 @@ def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_
         trace_vis_epoch.update({f'sample_{e}': True})
         # trace_vis_epoch.update({f'{quiver_name}_{e}': True})
         # print(i)
-        select_button_list.append(dict(label=f'Show epoch {e}', method='update', 
+        select_button_list.append(dict(label=f'Show epoch {e}' if training else 'Show sampling', method='update', 
                                        args=[{'visible': list(trace_vis_epoch.values())}, vis]))  
         
 
@@ -294,7 +372,7 @@ def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_
     return play_button_list, select_button_list, all_zero_slider
 
 def add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, n_button_animations, button_info, method,
-                      back_stats_idx, pause_idx, select_dropdown_idx):
+                      back_stats_idx, pause_idx, select_dropdown_idx, just_loss=False):
 
     # Show all stats buttons (loss, score)
     stats_button_list = []
@@ -306,7 +384,7 @@ def add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, n
     show_stats['sliders'] = []
     show_stats.update(button_visibility) 
     show_stats[f'updatemenus[{back_stats_idx}].visible'] = True
-    show_stats[f'updatemenus[{pause_idx}].visible'] = False
+    show_stats[f'updatemenus[{pause_idx}].visible'] = False if not just_loss else True
     show_stats[f'updatemenus[{select_dropdown_idx}].visible'] = False 
     
     stats_lables = ['Loss itr', 'Loss epoch']
@@ -459,116 +537,60 @@ def add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_
     return back_stats_button, back_detail_button, back_smpl_grad_noise_button
     
 
-def read_hdf_all_epochs_train(file):
-
-    # try:
-    hdf_file = pd.HDFStore(file)   
-    # print(smple.keys())
-    keys = hdf_file.keys()
-    # for k in keys:
-    #     print(k)
-    image_shape = hdf_file['/df/info']['image_shape'].values[0]
-    image_shape = list(map(int, image_shape.split(',')))
-    n_sel_time = hdf_file['/df/info']['n_sel_time'].values[0]
-
-    df_sample = []
-    df_grads_or_noises_info = pd.DataFrame()
-    # df_grad_or_noise_hist = []
-    # df_grad_g_z = pd.DataFrame()
-    # df_grad_g_z_at_sampling = pd.DataFrame()
-    df_fake_data = pd.DataFrame()
-    # df_intermediate_smpl = pd.DataFrame()
-    df_intermediate_smpl_list = []
-    df_grad_or_noise_grid_list = []
-    df_grad_or_noise_info_hist = []
-    epoch_list = []
-    for k in keys:
-        if 'samples' in k: 
-            smpl = hdf_file[k]['data_0'].to_numpy().reshape(image_shape)
-            df_sample.append(smpl)
-            epoch_list.append(int(k.split('/')[2].split('_')[2]))
-        elif 'intermediate_smpl'in k:
-            # df_intermediate_smpl = pd.concat([df_intermediate_smpl if not df_intermediate_smpl.empty else None, hdf_file[k]])
-            
-            intmd_smple = hdf_file[k].iloc[:, 1:].to_numpy().T.reshape(n_sel_time, *image_shape)
-            df_intermediate_smpl_list.append(intmd_smple)
-        
-        # elif 'grad_info' in k or 'noise_info' in k:
-        #     df_grads_or_noises_info = pd.concat([df_grads_or_noises_info if not df_grads_or_noises_info.empty else None, hdf_file[k]])
-        elif 'grad_info' in k or 'noise_info' in k: # noise or grad predicted for of samples generated iteratively
-            df_grad_or_noise_info_hist.append(hdf_file[k])
-    
-        elif 'grad_grid' in k or 'noise_grid' in k:
-            # df_grad_g_z = pd.concat([df_grad_g_z if not df_grad_g_z.empty else None, hdf_file[k]])
-            intmd_gr_ns = hdf_file[k].iloc[:, 1:].to_numpy().T.reshape(n_sel_time, *image_shape)
-            df_grad_or_noise_grid_list.append(intmd_gr_ns)
-        
-
-    df_data = hdf_file['/df/data']
-    n_samples = hdf_file['/df/info']['n_samples'].values[0]
-    
-    timesteps_list = hdf_file['/df/sampling_timesteps']['time'].to_numpy()
-    hdf_file.close()
-    # except:
-    #     print(f'Error in reading hdf file {file}')
-    #     hdf_file.close()
-    df_data = df_data['data_0'].to_numpy().reshape(image_shape)
-    df_sample = np.stack(df_sample)
-
-    return df_sample, df_data, df_intermediate_smpl_list, df_grad_or_noise_info_hist, \
-            df_grad_or_noise_grid_list, epoch_list, timesteps_list, n_samples
-
-def read_hdf_loss(file):
-
-    df_loss = pd.read_hdf(file)   
-    df_loss_itr = pd.DataFrame(df_loss.loc[0, ['loss_itr']].values[0], columns=['loss_itr'])
-    for i in range(1, df_loss.shape[0]):
-        df_loss_itr = pd.concat([df_loss_itr, pd.DataFrame(df_loss.loc[i, ['loss_itr']].values[0], columns=['loss_itr'])])
-    df_loss_itr['itr'] = np.arange(df_loss_itr.shape[0])
-
-    return df_loss.loc[:, ['epoch', 'loss_epoch']], df_loss_itr.reset_index(drop=True)
-
 def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list, 
                                     df_grad_or_noise_grid_list, df_grads_or_noises_info, 
                                     df_loss_itr, df_loss, epoch_list, timesteps_list, 
-                                    quiver_name, method, config,
-                                   width=750, height=570, range_x=[0, 207], range_y=[0, 207]):
+                                    quiver_name, method, config, just_loss=False, training=True, width=750, height=570):
 
     # The traces must be added in the correct order for the button's visibility to function properly
    
     num_epochs = len(epoch_list)
     colors = dict(sample='#AB63FA', grad='DarkSlateGrey', data='#19D3F3', fake='mediumorchid') # samples-grads-data
-    # create frames for each animation [epochs], all zeros samples are in one df: df_sample
-    all_zero_sample_frames = add_all_zeros_animation(df_sample, epoch_list, colors)
+    if not just_loss:
+        # create frames for each animation [epochs], all zeros samples are in one df: df_sample
+        all_zero_sample_frames = add_all_zeros_animation(df_sample, epoch_list)
 
-    # add animations of all epochs
-    animation_list = add_epochs_animation_slider(df_intermediate_smpl_list, epoch_list, timesteps_list)
+        # add animations of all epochs
+        animation_list = add_epochs_animation_slider(df_intermediate_smpl_list, epoch_list, timesteps_list)
 
     fig = go.Figure() 
-    # data, sample_zero at first epoch , grad at first epoch
 
-    fig = add_sample_trace(fig, all_zero_sample_frames, animation_list, epoch_list)
+    if not just_loss:
+        # data, sample_zero at first epoch , grad at first epoch
+        fig = add_sample_trace(fig, all_zero_sample_frames, animation_list, epoch_list)
 
     # add traces of statistics
-    fig = add_statistics_to_fig(fig, df_loss_itr, df_loss)
-    # add smpl grad_or_noise norm trace
-    fig = add_smpl_grads_or_noises_info_to_fig(fig, df_grads_or_noises_info, timesteps_list, epoch_list)
+    if training:
+        fig = add_statistics_to_fig(fig, df_loss_itr, df_loss)
+    
+    if not just_loss:
+        # add smpl grad_or_noise norm trace
+        fig = add_smpl_grads_or_noises_info_to_fig(fig, df_grads_or_noises_info, timesteps_list, epoch_list)
     # add data
     fig = add_data_trace(fig, df_data)
     # visibility of traces when coresponding button is clicked
     trace_visibility, stats_trace_vis, smpl_grad_noise_trace_vis = visibility_traces(fig, epoch_list)
     # n_button_animations equals to plays buttons
-    n_button_animations = len(animation_list) + 1  # 1: for all_zeros button 
-    n_button_statistics = 2 # loss itr, loss epoch
-    n_all_buttons = n_button_animations + n_button_statistics + 2  + 2 + 1 # 1: show sample noise norm  # show stats, show detail, show eval, 
-                                                                                                        # back_stats, back_detail, back_eval
+    if just_loss:
+        n_button_animations = 0
+    else:
+        n_button_animations = len(animation_list) + (1 if training else 0) # 1: for all_zeros button 
+    
+    n_button_statistics = 2 if training else 0 # loss itr, loss epoch
+    
+    if training:
+        n_all_buttons = n_button_animations + n_button_statistics + 2 + 2 + 1 # 1: show sample noise norm  # show stats, show detail, show eval, 
+    else:                                                                                                # back_stats, back_detail, back_eval
+        n_all_buttons = n_button_animations + 2 + 1 # 1: show sample noise norm  # show detail, show eval, 
+                                                                                 # back_detail, back_eval
     # n_traces_animation = 1 + 1 +  2*num_epochs # 1:data, 1: grad first epoch, len(epoch_list): samples of each epoch
     # n_traces_statistics = 2 + 2 +   # 2: loss itr 2: loss epoch
 
     # store idx of other buttons that adding to the layout for making visible True or False
     # buttons visibility
     button_visibility, stats_idx, back_smpl_grad_noise_norm_idx, pause_idx, \
-    back_stats_idx, back_detail_idx, select_dropdown_idx = visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_statistics)
+    back_stats_idx, back_detail_idx, select_dropdown_idx = visibility_buttons_and_idx(n_all_buttons, n_button_animations, 
+                                                                                      n_button_statistics, just_loss, training)
 
     frame_spec = {'frame': {'duration': 300, 'redraw': True}, 'fromcurrent': True, 'mode': 'immediate', 
               'transition': {'duration': 20, 'easing': 'cubic-in-out'}}
@@ -577,52 +599,70 @@ def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list
                          xanchor="right", yanchor="bottom", bgcolor='seashell')
     slider_info = dict(active=0, name=f'all_epoch', visible=True, currentvalue=dict(font_size=12, prefix=f'zero of epoch: ', xanchor='left'),
                  transition=dict(duration=300, easing='cubic-in-out'), pad=dict(b=10, t=60), len=1, x=0.0, y=0.08, xanchor='left', yanchor='top')
-    # add play buttons, show buttons
-    play_button_list, select_button_list, all_zero_slider = add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_list, 
-                                                                                         button_info, slider_info, frame_spec, epoch_list, quiver_name)
+    
+    all_zero_slider = dict()
+    if not just_loss:
+        # add play buttons, show buttons
+        play_button_list, select_button_list, all_zero_slider = add_play_show_buttons_slider(trace_visibility, button_visibility, 
+                                                                                            timesteps_list, button_info, slider_info, 
+                                                                                            frame_spec, epoch_list, training)
     
 
-    # show all stats buttons (loss, score)
-    stats_button_list, show_stats_button = add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, 
-                                                             n_button_animations, button_info, method,
-                                                                back_stats_idx, pause_idx, select_dropdown_idx)
+    if training:
+        # show all stats buttons (loss, score)
+        stats_button_list, show_stats_button = add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, 
+                                                                n_button_animations, button_info, method,
+                                                                back_stats_idx, pause_idx, select_dropdown_idx, just_loss)
 
-    # add smple grad_noise_norm [validation]
-    show_smpl_grad_noise_norm_button = add_sampling_grad_noise_norm_button(button_visibility, smpl_grad_noise_trace_vis, back_smpl_grad_noise_norm_idx, pause_idx, select_dropdown_idx, quiver_name)
+    if not just_loss:
+        # add smple grad_noise_norm [validation]
+        show_smpl_grad_noise_norm_button = add_sampling_grad_noise_norm_button(button_visibility, smpl_grad_noise_trace_vis, back_smpl_grad_noise_norm_idx, 
+                                                                            pause_idx, select_dropdown_idx, quiver_name)
     # show details  in select button [dropdown ]
     show_detail_button = add_detail_button(trace_visibility, button_visibility, config, back_detail_idx, pause_idx, select_dropdown_idx)
     # add data button
     show_data_button = add_data_button(button_visibility, trace_visibility, pause_idx)
-    # add pause button
-    pause_button = dict(buttons=[dict(label=f"{f'&#9724;':^5}", method='animate',  args=[[None],  {'frame':{'duration': 0, 'redraw': False}, 
-                                            'mode': 'immediate', 'fromcurrent': True, 'transition': {'duration': 0, 'easing': 'linear'}}])])
-    pause_button.update(button_info)
-    pause_button.update(dict(x=-0.12, y=0.001))
+
+    if not just_loss:
+        # add pause button
+        pause_button = dict(buttons=[dict(label=f"{f'&#9724;':^5}", method='animate',  args=[[None],  {'frame':{'duration': 0, 'redraw': False}, 
+                                                'mode': 'immediate', 'fromcurrent': True, 'transition': {'duration': 0, 'easing': 'linear'}}])])
+        pause_button.update(button_info)
+        if not training:
+            pause_button.update(dict(visible=False))
+        pause_button.update(dict(x=-0.12, y=0.001))
 
     # [ back buttons ] 
     back_stats_button, back_detail_button, back_smpl_score_button = add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_info, 
                                                                     method, back_detail_idx, stats_idx, back_smpl_grad_noise_norm_idx, select_dropdown_idx, back_stats_idx)
     
 
-
-    # button_list =  play_button_list + stats_button_list + [pause_button] + [back_stats_button]
-    button_list = play_button_list + stats_button_list + [pause_button] + [back_stats_button] + [back_detail_button] + [back_smpl_score_button]
     # all buttons          
-    # updatemenues = button_list + [dict(buttons=select_button_list[0:1]+[show_stats_button]+select_button_list[1:],
-    #                                     visible=True, showactive=False, direction='down', pad={"r": 10, "t": 20, "l": 10},
-    #                                     x=-0.1, xanchor="right", y=1.05, yanchor="top", bgcolor='seashell')] 
-                    
-    updatemenues = button_list + [dict(buttons=select_button_list[0:1]+[show_detail_button]+[show_stats_button]+select_button_list[1:]+[show_smpl_grad_noise_norm_button] + [show_data_button],
+    if training:
+        if just_loss:
+            button_list = stats_button_list + [back_stats_button] + [back_detail_button] + [back_smpl_score_button] 
+            updatemenues = button_list + [dict(buttons=[show_detail_button]+[show_stats_button] + [show_data_button],
+                                            visible=True, showactive=False, direction='down', pad={"r": 10, "t": 20, "l": 10},
+                                            x=-0.1, xanchor="right", y=1.05, yanchor="top", bgcolor='seashell')]              
+        else:
+            button_list = play_button_list + stats_button_list + [pause_button] + [back_stats_button] + [back_detail_button] + [back_smpl_score_button]               
+            updatemenues = button_list + [dict(buttons=select_button_list[0:1]+[show_detail_button]+[show_stats_button]+select_button_list[1:]+[show_smpl_grad_noise_norm_button] + [show_data_button],
+                                            visible=True, showactive=False, direction='down', pad={"r": 10, "t": 20, "l": 10},
+                                            x=-0.1, xanchor="right", y=1.05, yanchor="top", bgcolor='seashell')]
+    else:
+        button_list = play_button_list + [pause_button] + [back_detail_button] + [back_smpl_score_button]
+        updatemenues = button_list + [dict(buttons=select_button_list[0:1]+[show_detail_button]+select_button_list[1:]+[show_smpl_grad_noise_norm_button] + [show_data_button],
                                         visible=True, showactive=False, direction='down', pad={"r": 10, "t": 20, "l": 10},
                                         x=-0.1, xanchor="right", y=1.05, yanchor="top", bgcolor='seashell')]
     # print(len(updatemenues))  
     fig.layout=go.Layout(
             updatemenus=updatemenues,
-            sliders=[all_zero_slider])
-    frames = all_zero_sample_frames 
-    for i in range(len(animation_list)):
-        frames += animation_list[i]
-    fig.frames = frames
+            sliders=[all_zero_slider] )
+    if not just_loss:
+        frames = all_zero_sample_frames 
+        for i in range(len(animation_list)):
+            frames += animation_list[i]
+        fig.frames = frames
     # Update layout for better aesthetics
     # scaleanchor='y', scaleratio=1,
     # scaleanchor='x', scaleratio=1,
@@ -642,31 +682,37 @@ def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list
     return fig
  
 
-def plot_animation(method, expr_id, training=True, epoch_key=-1, all_epochs=False, quiver_name=None, test_name=None):
+def plot_animation(expr_id, training=True, quiver_name='noise', train_name=None, test_name=None):
 
+    method = expr_id.split('_')[0] 
     dataset_name, config = get_dataset_name(method, expr_id)
     path = f'saved_result/{method}/{dataset_name}/saved_hdfs_training' if training else f'saved_result/{method}/{dataset_name}/saved_hdfs'
     file = f'{path}/{expr_id}_df_sample_per_epoch.h5' if training else f'{path}/{expr_id}_df_sample.h5'  
-    method_type = f"{method}"
+    method_type = f"{method} [training]" if training else f"{method} [sampling]" 
     
+    if train_name is not None:
+        expr_id += train_name 
     if test_name is not None:
        file = f'{path}/{expr_id}_df_sample_{test_name}.h5' 
 
 
-    if training and all_epochs:
-        df_sample, df_data, df_intermediate_smpl_list, df_grads_or_noises_info, \
-            df_grad_or_noise_grid_list, epoch_list, timesteps_list, n_samples  = read_hdf_all_epochs_train(file)
+    
+    df_sample, df_data, df_intermediate_smpl_list, df_grads_or_noises_info, \
+        df_grad_or_noise_grid_list, epoch_list, timesteps_list, n_samples  = read_hdf_all_epochs_train(file)
 
-       
+    df_loss, df_loss_itr = None, None
+    if training:   
         file = f'{path}/{expr_id}_df_loss_per_epoch.h5'
         df_loss, df_loss_itr = read_hdf_loss(file)
 
-        fig_all = prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list, 
+    just_loss = True if len(df_sample)==0 else False
+    fig_all = prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list, 
                                                             df_grad_or_noise_grid_list, df_grads_or_noises_info, 
                                                             df_loss_itr, df_loss, epoch_list, timesteps_list, 
-                                                            quiver_name, method_type, config)
+                                                            quiver_name, method_type, config, just_loss, training)
           
     show_latex_in_plotly()
+
     return fig_all
 
 
@@ -683,7 +729,7 @@ if __name__=='__main__':
     # expr_id = 'Regression_ToyRegressionNet_4_64_swissroll'
     # expr_id = 'Boosting_T_40_ToyBoosting_4_64_swissroll_t_dim_1_innr_ep_500_gamma_0.025'
     expr_id = 'DDPM-Hidden_beta_linear_T_40_ToyDDPMHidden_4_64_swissroll_t_dim_1_h_size_2'
-    expr_id = 'DDPM_beta_linear_T_40_UNetMNIST_2_16_MNIST_t_dim_16'
+    expr_id = 'DDPM_beta_linear_T_40_UNetMNIST_4_32_MNIST_t_dim_8'
     method = expr_id.split('_')[0]
-    fig = plot_animation(method, expr_id, training=True, all_epochs=True, quiver_name='noise')
+    fig = plot_animation(method, expr_id, training=True)
     # fig_sample, fig_loss = plot_animation_regression(method, expr_id, training=False, all_zeros=True)

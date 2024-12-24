@@ -3,6 +3,8 @@ from common_imports_diffusion import *
 from diffusion_ddpm_sampling import DDPM_Sampler
 from utils_diffusion import construct_image_grid
 
+import warnings
+warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
 class DDPM_Model(nn.Module):
 
@@ -37,8 +39,8 @@ class DDPM_Model(nn.Module):
         DDPM
         x_{t} = sqrt(alpha_t) * x_{t-1}  +  sqrt(1- alpha_t) * eps
         """
-        s_alpha = self.sqrt_alphas[t].reshape(-1, 1)
-        s_one_alpha = self.sqrt_one_minus_alphas[t].reshape(-1, 1)
+        s_alpha = self.sqrt_alphas[t].reshape(-1, 1).unsqueeze(-1).unsqueeze(-1)
+        s_one_alpha = self.sqrt_one_minus_alphas[t].reshape(-1, 1).unsqueeze(-1).unsqueeze(-1)
         eps_noise = torch.randn_like(x)
         x_noisy =  s_alpha * x + s_one_alpha * eps_noise
 
@@ -52,10 +54,25 @@ class DDPM_Model(nn.Module):
         loss_fn = nn.MSELoss()
         optimizer = optim.Adam(self.model.parameters(), lr=lr)# betas=(0.9, 0.999), weight_decay=1e-4)
 
+        len_dataloader = len(self.dataloader)
+        start_epoch = 0
+        loss = 0
+        if params.resume and resume_file_exists:
+            optimizer.load_state_dict(expr_checkpoint['optimizer_state_dict'])
+            start_epoch = expr_checkpoint['epoch'] + 1
+            if start_epoch==n_epochs or start_epoch==(n_epochs-1) or start_epoch > n_epochs :
+                if params.stop_epoch==-1:
+                    print(f'start_epoch: {start_epoch} is equal (or close)(or greater than) to n_epochs: {n_epochs}')
+                    n_epochs = int(input('Enter a valid stop_epoch:'))
+                else:
+                    n_epochs = params.stop_epoch
+            loss = expr_checkpoint['loss']
+
         loss_hist = []
-        row_df_loss = 0
         
-        epochs = tqdm(range(n_epochs), unit="epoch", mininterval=0, disable=False)
+        epochs = tqdm(range(start_epoch, n_epochs), unit="epoch", mininterval=0, disable=False)
+        if params.resume: epochs.set_postfix_str(f"| epoch: [{start_epoch}/{n_epochs}]| Last Loss {loss:<6.3f}")
+        
         for epoch in epochs:
             loss_hist_epoch = []
             # epochs.set_description(f"Epoch {epoch}")
@@ -72,22 +89,37 @@ class DDPM_Model(nn.Module):
 
             # save progress
             if True: 
+                
                 loss_hist.append(np.mean(loss_hist_epoch))
-                epochs.set_postfix_str(f"itr: {epoch*len(self.dataloader) + 1:<6}| Loss {loss_hist[-1]:<6.3f}")
+                epochs.set_postfix_str(f"| epoch [{epoch+1}]/{n_epochs}| itr: {epoch*len_dataloader + 1:<6}| Loss {loss_hist[-1]:<6.3f}")
 
-                if params.save_hdf:
-                    df_loss_per_itr.loc[row_df_loss, 'epoch'] = epoch + 1
-                    # df_loss_per_itr.loc[row_df_loss, 'itr'] = itr
-                    df_loss_per_itr.loc[row_df_loss, 'loss_itr'] = loss_hist_epoch
-                    df_loss_per_itr.loc[row_df_loss, 'loss_epoch'] = np.mean(loss_hist_epoch)
-                    row_df_loss += 1
-
+                
                 if (epoch + 1)% params.save_freq == 0 or epoch == n_epochs-1:
                     # print(f'epoch {epoch+1}, loss: {loss.item()}')
                     if params.save_model:
-                        torch.save(self.model.state_dict(), f'{params.save_dir}/saved_models/{self.expr_id}.pth')
+                        
+                        checkpoint = {'epoch': epoch,
+                                    'model_state_dict': self.model.state_dict(),
+                                    'optimizer_state_dict': optimizer.state_dict(),
+                                    'loss': loss_hist[-1]}
+                        torch.save(checkpoint, f'{params.save_dir}/saved_models/{self.expr_id}.pt')
 
-                if (epoch + 1)% params.save_freq == 0 and params.validation:
+                    if params.save_hdf:
+
+                        df_loss_per_itr = pd.DataFrame(columns=['itr', 'loss_itr'])
+                        df_loss_per_epoch = pd.DataFrame(columns=['epoch', 'loss_epoch'])
+                        df_loss_per_epoch['epoch'] = [epoch + 1]
+                        df_loss_per_epoch['loss_epoch'] = [np.mean(loss_hist_epoch)]
+                        df_loss_per_itr['itr'] = np.arange(epoch*len_dataloader+1, (epoch+1)*len_dataloader+1)
+                        df_loss_per_itr['loss_itr'] = loss_hist_epoch
+
+                        with pd.HDFStore(file_loss, 'a') as hdf_store_loss:
+                            hdf_store_loss.append(key=f'df/loss_epoch', value=df_loss_per_epoch, format='t')
+                            hdf_store_loss.append(key=f'df/loss_itr', value=df_loss_per_itr, format='t') 
+                       
+
+                if (epoch + 1)% params.save_freq_img == 0 and params.validation:
+                    epochs.set_postfix_str(f"| Validation ...| [{start_epoch+1}/{n_epochs}]| Loss train {loss_hist[-1]:<6.3f}")
                     self.save_result(epoch, loss_hist, x_batch.shape[1:])
                         
                     self.model.train()
@@ -120,8 +152,7 @@ class DDPM_Model(nn.Module):
             plt.close()
         
         if params.save_hdf:
-            import warnings
-            warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
+            
             
             # step = self.n_timesteps // params.n_sel_time
             # dfs = pd.DataFrame(intermediate_smpl[::step, :, :].reshape(-1, data_dim), columns=['x', 'y'])
@@ -137,7 +168,7 @@ class DDPM_Model(nn.Module):
             dfims = pd.DataFrame(data) 
 
                         
-            noises = select_samples_for_plot(noises, params.grid_size**2, n_timestep_smpl, params.n_sel_time)
+            noises = select_samples_for_plot(noises, params.n_samples, n_timestep_smpl, params.n_sel_time)
             new_noise = construct_image_grid(params.n_sel_time, noises)    
             flat_noise_len = np.prod(new_noise.shape[1:])
             noises = {'epoch': [epoch + 1]  * flat_noise_len}
@@ -163,7 +194,7 @@ class DDPM_Model(nn.Module):
             # with pd.HDFStore(file_sample_zero_all, 'a') as hdf_store_samples_zero:
             #     hdf_store_samples_zero.append(key=f'df/sample_zero_epoch_{epoch + 1:06}', value=dfs, format='t')
                 
-            df_loss_per_itr.to_hdf(file_loss, key='key', index=False)
+            
 
 
 if __name__=='__main__':
@@ -190,9 +221,8 @@ if __name__=='__main__':
     time_dim= params.time_dim
 
     dataset_name = params.dataset
+    params.normalize = True
     batch_size = params.batch_size
-    total_size = params.total_size
-    normalize = params.normalize
     n_timestep_smpl =  n_timesteps if params.n_timestep_smpl==-1 else params.n_timestep_smpl
 
     n_epochs = params.n_epoch
@@ -207,36 +237,43 @@ if __name__=='__main__':
         ['time_dim:', time_dim],
         ['dataset_name:', dataset_name],
         ['batch_size:', batch_size],
-        ['total_size:', total_size],
-        ['normalize:', normalize],
         ['n_timestep_smpl:', n_timestep_smpl],
         ['n_epochs:', n_epochs],
         ['lr:' , lr],
         ['seed:', params.seed]
     ]
     experiment_info = tabulate(experiment_info, tablefmt='plain')
-    print(f'\n{Fore.MAGENTA}{experiment_info}{Fore.RESET}\n')
+    
 
     expr_id = f'DDPM_beta_{beta_schedule}_T_{n_timesteps}_{model_name}_{dataset_name}_t_dim_{time_dim}'
-    if normalize:
-        expr_id += '_norm'
-    save_config_json(save_dir, params, expr_id)
-
-    betas = select_beta_schedule(s=beta_schedule, n_timesteps=n_timesteps).to(device)
-    model = select_model_diffusion(model_info=model_name, data_dim=data_dim, time_dim=time_dim, n_timesteps=n_timesteps, device=device)
-    dataloader = select_dataset(dataset_name=dataset_name, batch_size=batch_size)
-    print(f'\n{Fore.LIGHTBLACK_EX}{model}{Fore.RESET}\n')
     
-    ddpm = DDPM_Model(model=model, dataloader=dataloader, betas=betas, n_timesteps=n_timesteps, expr_id=expr_id)
-    print(f'\n {expr_id}\n')
+    betas = select_beta_schedule(s=beta_schedule, n_timesteps=n_timesteps).to(device)
+    model = select_model_diffusion(model_info=model_name, time_dim=time_dim, n_timesteps=n_timesteps, device=device)
+    dataloader = select_dataset(dataset_name=dataset_name, batch_size=batch_size)
     dataset_mini = torch.cat([next(iter(dataloader))[0], next(iter(dataloader))[0]])
-    create_save_dir_training(params.save_dir, expr_id)
+
+    resume_file_exists = os.path.exists(f'{params.save_dir}/saved_models/{expr_id}.pt')
+    if params.resume and resume_file_exists:
+        expr_checkpoint = torch.load(f'{params.save_dir}/saved_models/{expr_id}.pt', weights_only=False)
+        model.load_state_dict(expr_checkpoint['model_state_dict'])
+    else:
+        save_config_json(save_dir, params, expr_id)
+        create_save_dir_training(params.save_dir, expr_id)
+        
+    
     if params.save_hdf:
-        file_loss, file_sample, df_loss_per_itr = \
-                create_hdf_file_training(params.save_dir, expr_id, dataset_mini, n_timestep_smpl,  params.n_sel_time, params.grid_size, params.n_samples)
+        file_loss, file_sample = \
+                create_hdf_file_training(params.save_dir, expr_id, dataset_mini, n_timestep_smpl,  params.n_sel_time, params.n_samples, params.resume)
+
+    print(f'\n{Fore.LIGHTBLACK_EX}{model}{Fore.RESET}\n')
+
+    print(f'\n{Fore.MAGENTA}{experiment_info}{Fore.RESET}\n')
+    
+    print(f'\n {expr_id}\n')
+
 
     # torch.set_default_device(device)
-
+    ddpm = DDPM_Model(model=model, dataloader=dataloader, betas=betas, n_timesteps=n_timesteps, expr_id=expr_id)
     ddpm.train(n_epochs=n_epochs, lr=lr, device=device)
 
     save_config_json(save_dir, params, expr_id)

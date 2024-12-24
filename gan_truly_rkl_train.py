@@ -3,7 +3,10 @@
 from common_imports_gan import *
 
 from gan_truly_rkl_sampling import GAN_Sampler
+from utils_gan import construct_image_grid
 
+import warnings
+warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
 
 class GAN_Model(nn.Module):
@@ -135,10 +138,7 @@ class GAN_Model(nn.Module):
         self.G.train()
 
         self.eps = eps.to(device)   
-        self.fake_sample_grid, self.grid_x, self.grid_y = get_fake_sample_grid(params.grid_size)
-        self.fake_sample_grid = self.fake_sample_grid.to(device)
-        self.fake_sample_grid.requires_grad_(True)    
-      
+
         optimizer_dsc = torch.optim.Adam(self.D.parameters(), lr=lr_dsc) # betas=(0.5, 0.999)
         optimizer_gen = torch.optim.Adam(self.G.parameters(), lr=lr_gen) # betas=(0.9, 0.999), weight_decay=1e-4)
 
@@ -146,6 +146,25 @@ class GAN_Model(nn.Module):
         self.loss_coef_dsc = lc_dsc
         self.loss_coef_gen = lc_gen
         
+        len_dataloader = len(self.dataloader)
+        start_epoch = 0
+        stats = {}
+        if params.resume and resume_file_exists:
+            optimizer_dsc.load_state_dict(expr_checkpoint['optimizer_dsc_state_dict'])
+            optimizer_gen.load_state_dict(expr_checkpoint['optimizer_gen_state_dict'])
+            start_epoch = expr_checkpoint['epoch'] + 1
+            if start_epoch==n_epochs or start_epoch==(n_epochs-1) or start_epoch > n_epochs :
+                if params.stop_epoch==-1:
+                    print(f'start_epoch: {start_epoch} is equal (or close)(or greater than) to n_epochs: {n_epochs}')
+                    n_epochs = int(input('Enter a valid stop_epoch:'))
+                else:
+                    n_epochs = params.stop_epoch
+
+            stats['l_dsc'] = expr_checkpoint['loss_dsc']
+            stats['l_gen'] = expr_checkpoint['loss_gen']
+            stats['s_real'] = expr_checkpoint['real_score']
+            stats['s_fake'] = expr_checkpoint['fake_score']
+
         loss_dsc_hist = []
         loss_gen_hist = []
         real_score_hist = []
@@ -153,17 +172,22 @@ class GAN_Model(nn.Module):
 
         row_df_loss = 0
         
-        epochs = tqdm(range(n_epochs), unit="epoch", mininterval=0, disable=False)
+        epochs = tqdm(range(start_epoch, n_epochs), unit="epoch", mininterval=0, disable=False)
+        if params.resume: 
+            epochs.set_postfix_str(f"| epoch: [{start_epoch}/{n_epochs}] Last: "+
+                                       f"|Loss D {stats['l_dsc'] :<6.3f}|Loss G {stats['l_gen']:.3f}"+
+                                       f"|D(x) {stats['s_real']:<6.3f}|D(G(z)) {stats['s_fake']:<6.3f}")
         for epoch in epochs:
             loss_dsc_hist_epoch, loss_gen_hist_epoch = [], []
             # epochs.set_description(f"Epoch {epoch}")
-            for itr, x in enumerate(self.dataloader):
-                
-                z = torch.randn(x.shape[0], z_dim, device=device)
+            for itr, (x_batch, _) in enumerate(self.dataloader):
+
+                x_batch = x_batch.to(device)
+                z = torch.randn(x_batch.shape[0], z_dim, device=device)
                 # Training discriminator
                 for k in range(1):
                     
-                    loss_dsc = self.train_discriminator(x, z)
+                    loss_dsc = self.train_discriminator(x_batch, z)
                 
                     optimizer_dsc.zero_grad()
                     loss_dsc.backward()
@@ -183,45 +207,56 @@ class GAN_Model(nn.Module):
             # save progress
             if True: 
                 with torch.no_grad():  
-                    z = torch.randn(x.shape[0], z_dim, device=device)
-                    real_score = self.D(x).mean().item()
+                    z = torch.randn(x_batch.shape[0], z_dim, device=device)
+                    real_score = self.D(x_batch).mean().item()
                     fake_score = self.D(self.G(z)).mean().item()
 
                 real_score_hist.append(real_score)
                 fake_score_hist.append(fake_score)
                 loss_dsc_hist.append(np.mean(loss_dsc_hist_epoch))
                 loss_gen_hist.append(np.mean(loss_gen_hist_epoch))
-                epochs.set_postfix_str(f"itr: {epoch*len(self.dataloader) + 1:<6}"+
+                
+                epochs.set_postfix_str(f"| epoch: [{epoch+1}/{n_epochs}]| itr: {epoch*len(self.dataloader) + 1:<6}"+
                                        f"|Loss D {loss_dsc_hist[-1]:<6.3f}|Loss G {loss_gen_hist[-1]:.3f}"+
                                        f"|D(x) {real_score:<6.3f}|D(G(z)) {fake_score:<6.3f}")
             
-                if params.save_hdf:
-                    df_loss_score_per_epoch.loc[row_df_loss, 'epoch'] = epoch + 1
-                    # df_loss_score_per_itr.loc[row_df_loss, 'itr'] = itr
-                    df_loss_score_per_epoch.loc[row_df_loss, 'loss_dsc_itr'] = loss_dsc_hist_epoch
-                    df_loss_score_per_epoch.loc[row_df_loss, 'loss_gen_itr'] = loss_gen_hist_epoch
-
-                    df_loss_score_per_epoch.loc[row_df_loss, 'loss_dsc_epoch'] = np.mean(loss_dsc_hist_epoch)
-                    df_loss_score_per_epoch.loc[row_df_loss, 'loss_gen_epoch'] = np.mean(loss_gen_hist_epoch)
-                    df_loss_score_per_epoch.loc[row_df_loss, 'real_score_epoch'] = real_score
-                    df_loss_score_per_epoch.loc[row_df_loss, 'fake_score_epoch'] = fake_score
-                    row_df_loss += 1
+                
 
                 if (epoch + 1)% params.save_freq == 0 or epoch == n_epochs-1:
                     # print(f'epoch {epoch+1}, loss: {loss.item()}')
                     if params.save_model:
-                        torch.save(self.model.state_dict(), f'{params.save_dir}/saved_models/{self.expr_id}.pth')
+                        checkpoint = {'epoch': epoch,
+                                    'model_state_dict': self.model.state_dict(),
+                                    'optimizer_dsc_state_dict': optimizer_dsc.state_dict(),
+                                    'optimizer_gen_state_dict': optimizer_gen.state_dict(),
+                                    'loss_dsc': loss_dsc_hist[-1], 
+                                    'loss_gen': loss_gen_hist[-1],
+                                    'real_score': real_score_hist[-1], 
+                                    'fake_score': fake_score_hist[-1]}
+                        torch.save(checkpoint, f'{params.save_dir}/saved_models/{self.expr_id}.pt')
+                        
+                    if params.save_hdf:
+
+                        df_loss_score_per_itr = pd.DataFrame(columns=['itr', 'loss_dsc_itr', 'loss_gen_itr'])
+                        df_loss_score_per_epoch = pd.DataFrame(columns=['epoch', 'loss_dsc_epoch', 'loss_gen_epoch', 'real_score_epoch', 'fake_score_epoch'])
+                        df_loss_score_per_epoch['epoch'] = [epoch + 1]
+                        df_loss_score_per_epoch['loss_dsc_epoch'] = [np.mean(loss_dsc_hist_epoch)]
+                        df_loss_score_per_epoch['loss_gen_epoch'] = [np.mean(loss_gen_hist_epoch)]
+                        df_loss_score_per_epoch['real_score_epoch'] = [real_score]
+                        df_loss_score_per_epoch['fake_score_epoch'] = [fake_score]
+                        df_loss_score_per_itr['itr'] = np.arange(epoch*len_dataloader+1, (epoch+1)*len_dataloader+1)
+                        df_loss_score_per_itr['loss_dsc_itr'] = loss_dsc_hist_epoch
+                        df_loss_score_per_itr['loss_gen_itr'] = loss_gen_hist_epoch
+
+                        with pd.HDFStore(file_loss, 'a') as hdf_store_loss:
+                                hdf_store_loss.append(key=f'df/loss_epoch', value=df_loss_score_per_epoch, format='t')
+                                hdf_store_loss.append(key=f'df/loss_itr', value=df_loss_score_per_itr, format='t')     
                 
-                if (epoch + 1)% params.save_freq == (params.save_freq-1) and params.validation:
-                        # Compute discriminator output for fake images
-                        score_fake = self.D(self.fake_sample_grid)
-                        # Compute the generator loss
-                        loss_gen = self.loss_gen(score_fake, *self.loss_coef_gen)
-                        # Compute gradients with respect to generator output
-                        grad_g_z = -torch.autograd.grad(outputs=loss_gen, inputs=self.fake_sample_grid, create_graph=False)[0].detach().cpu().numpy()
-                
-                if (epoch + 1)% params.save_freq == 0 and params.validation:
-                    self.save_result(epoch, loss_dsc_hist, loss_gen_hist, real_score_hist, fake_score_hist, grad_g_z, x.shape[1], z_dim)
+                if (epoch + 1)% params.save_freq_img == 0 and params.validation:
+                    epochs.set_postfix_str(f"| Validation ... | [{start_epoch+1}/{n_epochs}]| train stats:"+
+                                       f"|Loss D {loss_dsc_hist[-1]:<6.3f}|Loss G {loss_gen_hist[-1]:.3f}"+
+                                       f"|D(x) {real_score:<6.3f}|D(G(z)) {fake_score:<6.3f}")
+                    self.save_result(epoch, loss_dsc_hist, loss_gen_hist, real_score_hist, fake_score_hist, x_batch.shape[1:], z_dim)
                         
                     self.model.train()
                 
@@ -251,21 +286,18 @@ class GAN_Model(nn.Module):
         return loss
 
 
-    def save_result(self, epoch, loss_dsc_hist, loss_gen_hist, real_score_hist, fake_score_hist, grad_g_z, data_dim, z_dim):
+    def save_result(self, epoch, loss_dsc_hist, loss_gen_hist, real_score_hist, fake_score_hist, data_dim, z_dim):
         
         sampler = GAN_Sampler(model=self.model, dataloader=self.dataloader, training=True)
-        samples, sample_score, data_score = sampler.sampling(n_samples=params.n_samples, data_dim=data_dim, z_dim=z_dim, 
-                                                        normalize=params.normalize, scaler=scaler, device=device)
+        samples, sample_score, data_score = sampler.sampling(n_samples=params.n_samples, z_dim=z_dim, device=device)
         sample_score_mean = round(np.mean(sample_score).item(), 4)
         sample_score_std = round(np.std(sample_score).item(), 4)
         data_score_mean = round(np.mean(data_score).item(), 4)
         data_score_std = round(np.std(data_score).item(), 4)
-        
-        u, v = grad_g_z[:, 0], grad_g_z[:, 1]
-        
+              
 
         if params.save_fig:
-            plot_samples(samples, dataset, f'{params.save_dir}/plot_samples_training/{self.expr_id}/{epoch+1}.png')
+            plot_samples(samples, dataset_mini, f'{params.save_dir}/plot_samples_training/{self.expr_id}/{epoch+1}.png')
             plt.figure()
             plt.plot(loss_dsc_hist, label='D', color='C2') # marker='o', linestyle='dashed',linewidth=2, markersize=12)
             plt.plot(loss_gen_hist, label='G', color='C3')
@@ -283,37 +315,32 @@ class GAN_Model(nn.Module):
             plt.savefig( f'{params.save_dir}/plot_samples_training/{self.expr_id}/score.png')
             plt.close()
 
-            plt.figure(dpi=150)
-            magnitude = np.hypot(u, v)
-            # plt.scatter(self.grid_x, self.grid_y, color='k', s=1)
-            plt.scatter(dataset[:, 0], dataset[:, 1], label='data', c='C9', marker='.', s=20)
-            plt.scatter(samples[:, 0], samples[:, 1], label='sample', c='C4', marker='.', s=20)
-            plt.quiver(self.grid_x, self.grid_y, u, v, magnitude, scale=None, cmap='plasma', pivot='tail', angles='xy', units='xy') 
-            plt.title(f'epoch: {epoch+1:<6} | '+r'$\frac{\partial{D(G(z))}}{\partial{G(z)}}$')
-            plt.savefig(f'{params.save_dir}/plot_samples_training/{self.expr_id}/grad_gen_out_{epoch+1}.png')
-            plt.close()
+
         
         if params.save_hdf:
-            import warnings
-            warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
             
             
-            
-            dfs = pd.DataFrame({'x':samples[:, 0], 'y':samples[:, 1], 'epoch': np.repeat(epoch + 1, samples.shape[0])})
+            samples = samples[None, :, :, :, :]
+
+            new_data = construct_image_grid(1, samples)    
+            flat_img_len = np.prod(new_data.shape[1:])
+            data = {'epoch': [epoch + 1]  * flat_img_len}
+            data[f'data_{0}'] = new_data[0].flatten()
+            dfs = pd.DataFrame(data)
+
             # dfssc = pd.DataFrame(sample_score, columns=['score']) # scores of all samples generated at this epoch
             # dfdsc = pd.DataFrame(data_score, columns=['score']) # scores of all data in at this epoch
             dfsci = pd.DataFrame({'data_score_mean': [data_score_mean], 'data_score_std': [data_score_std], 
                                   'sample_score_mean': [sample_score_mean], 'sample_score_std': [sample_score_std], 'epoch': [epoch + 1]})
-            dfgr = pd.DataFrame({'u': u, 'v': v, 'epoch': np.repeat(epoch + 1, u.shape[0])})
+            
             with pd.HDFStore(file_sample, 'a') as hdf_store_samples:
                 hdf_store_samples.append(key=f'df/samples_epoch_{epoch + 1:06}', value=dfs, format='t')
                 # hdf_store_samples.append(key=f'df/scores_sample_epoch_{epoch + 1:06}', value=dfssc, format='t') # all samples
                 # hdf_store_samples.append(key=f'df/scores_data_epoch_{epoch + 1:06}', value=dfdsc, format='t') # all data
                 hdf_store_samples.append(key=f'df/score_data_sample_info_{epoch + 1:06}', value=dfsci, format='t')
-                hdf_store_samples.append(key=f'df/grad_g_z_{epoch + 1:06}', value=dfgr, format='t')
+                
                 
 
-            df_loss_score_per_epoch.to_hdf(file_loss, key='key', index=False)
 
 
 if __name__=='__main__':
@@ -341,8 +368,7 @@ if __name__=='__main__':
 
     dataset_name = params.dataset
     batch_size = params.batch_size
-    total_size = params.total_size
-    normalize = params.normalize
+    params.normalize = True
     
     n_epochs = params.n_epoch
     lr_gen = params.lr_gen
@@ -363,8 +389,6 @@ if __name__=='__main__':
         ['loss_gen:', loss_gen],
         ['dataset_name:', dataset_name],
         ['batch_size:', batch_size],
-        ['total_size:', total_size],
-        ['normalize:', normalize],
         ['n_epochs:', n_epochs],
         ['lr_dsc:' , lr_dsc],
         ['lr_gen:' , lr_gen],
@@ -381,23 +405,34 @@ if __name__=='__main__':
     expr_id += f'_loss_gen_{loss_gen}'
     if lc_dsc:
         expr_id += f'_lc_{lc_gen_id}'
-    if normalize:
-        expr_id += '_norm'
+
+    
     save_config_json(save_dir, params, expr_id)
 
 
     model = select_model_gan(model_info=model_name, data_dim=data_dim, z_dim=z_dim, device=device)
-    dataloader, dataset, scaler = select_dataset(dataset_name=dataset_name, batch_size=batch_size, total_size=total_size, normalize=normalize)
+    dataloader = select_dataset(dataset_name=dataset_name, batch_size=batch_size)
+    dataset_mini = torch.cat([next(iter(dataloader))[0], next(iter(dataloader))[0]])
+
+    resume_file_exists = os.path.exists(f'{params.save_dir}/saved_models/{expr_id}.pt')
+    if params.resume and resume_file_exists:
+        expr_checkpoint = torch.load(f'{params.save_dir}/saved_models/{expr_id}.pt', weights_only=False)
+        model.load_state_dict(expr_checkpoint['model_state_dict'])
+    else:
+        save_config_json(save_dir, params, expr_id)
+        create_save_dir_training(params.save_dir, expr_id)
+    
+    if params.save_hdf:          # params.n_timestep_smpl is not used for this GAN, is just for avoiding error   
+        file_loss, file_sample = \
+                create_hdf_file_training(params.save_dir, expr_id, dataset_mini, params.n_samples, params.n_timestep_smpl, -1, params.resume)
+
     print(f'\n{Fore.LIGHTBLACK_EX}{model}{Fore.RESET}\n')
+
+    print(f'\n{Fore.MAGENTA}{experiment_info}{Fore.RESET}\n')
+    
+    print(f'\n {expr_id}\n')
     
     gan = GAN_Model(model=model, dataloader=dataloader, loss_dsc=loss_dsc, loss_gen=loss_gen, expr_id=expr_id)
-    print(f'\n {expr_id}\n')
-
-    create_save_dir_training(params.save_dir, expr_id)
-    if params.save_hdf:          # params.n_timestep_smpl is not used for this GAN, is just for avoiding error   
-        file_loss, file_sample, df_loss_score_per_epoch = \
-                create_hdf_file_training(params.save_dir, expr_id, dataset, params.n_samples, params.n_timestep_smpl, params.grid_size, -1)
-
     gan.train(n_epochs=n_epochs, lr_dsc=lr_dsc, lr_gen=lr_gen, lc_dsc=lc_dsc, lc_gen=lc_gen, device=device)
 
     save_config_json(save_dir, params, expr_id)

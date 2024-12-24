@@ -1,6 +1,8 @@
 
 from common_imports_gan import *
 
+from utils_gan import denormalize
+from utils_gan import construct_image_grid
 
 class GAN_Sampler(nn.Module):
 
@@ -21,14 +23,14 @@ class GAN_Sampler(nn.Module):
         
     
 
-    def sampling(self, n_samples=5, data_dim=2, z_dim=2, normalize=False, scaler=None, params=None, device='cuda'):
+    def sampling(self, n_samples=5, z_dim=2, params=None, device='cuda'):
 
         D = self.model.discriminator.to(device)
         G = self.model.generator.to(device)
         D.eval()
         G.eval()
         with torch.no_grad():  
-            sample = torch.randn(n_samples, data_dim).to(device)
+            # sample = torch.randn(n_samples, data_dim).to(device)
 
             z = torch.randn(n_samples, z_dim, device=device)
             sample = G(z).detach()   
@@ -36,59 +38,101 @@ class GAN_Sampler(nn.Module):
             sample_score = D(sample).cpu().numpy()
             # sample_score = D(sample).mean().numpy()
 
-            if normalize:
-                sample = scaler.inverse_transform(sample)
+            sample = denormalize(sample.cpu().numpy())
             data_score = []
-            for itr, x in enumerate(self.dataloader):
-                d_score = D(x).cpu().numpy()
+            for itr, (x_batch, _) in enumerate(self.dataloader):
+                x_batch = x_batch.to(device)
+                d_score = D(x_batch).cpu().numpy()
                 data_score.append(d_score)
             data_score = np.concatenate(data_score)
             # data_score = np.mean(data_score)
 
-        self.save_result(sample, sample_score, data_score, params)
+        if not self.training: self.save_result(sample, sample_score, data_score, params)
 
-        return sample.cpu().numpy(), sample_score, data_score
+        return sample, sample_score, data_score
 
 
 
     def save_result(self, sample, sample_score, data_score, params):
 
-        if not self.training:
+
             
-            create_save_dir(params.save_dir)
-            if params.save_fig:
-                f_name = f'sample_{self.expr_id}' if params.test_name is None else f'sample_{self.expr_id}_{params.test_name}'
-                plot_samples(sample, f'{params.save_dir}/plot_samples/{f_name}.png')
-                
-               
-            if params.save_hdf:
-                
-                file_sample = create_hdf_file(params.save_dir, self.expr_id, params.dataset, 
-                                              params.n_samples, params.test_name)
+        create_save_dir(params.save_dir)
+        if params.save_fig:
+            f_name = f'sample_{self.expr_id}' if params.test_name is None else f'sample_{self.expr_id}_{params.test_name}'
+            plot_samples(sample, f'{params.save_dir}/plot_samples/{f_name}.png')
+            
+            
+        if params.save_hdf:
+            
+            file_sample = create_hdf_file(params.save_dir, self.expr_id, params.dataset_mini, 
+                                            params.n_samples, -1, -1, params.train_name, params.test_name)
 
-                import warnings
-                warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
-                
-                sample_score_mean = round(np.mean(sample_score).item(), 4)
-                sample_score_std = round(np.std(sample_score).item(), 4)
-                data_score_mean = round(np.mean(data_score).item(), 4)
-                data_score_std = round(np.std(data_score).item(), 4)
+            import warnings
+            warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
+            
+            sample_score_mean = round(np.mean(sample_score).item(), 4)
+            sample_score_std = round(np.std(sample_score).item(), 4)
+            data_score_mean = round(np.mean(data_score).item(), 4)
+            data_score_std = round(np.std(data_score).item(), 4)
 
-                dfs = pd.DataFrame(sample, columns=['x', 'y'])
-                dfssc = pd.DataFrame(sample_score, columns=['score'])
-                dfdsc = pd.DataFrame(data_score, columns=['score'])
-                dfsci = pd.DataFrame({'data_score_mean': [data_score_mean], 'data_score_std': [data_score_std], 
+            sample = sample[None, :, :, :, :]
+
+            new_data = construct_image_grid(1, sample)    
+            data = {}
+            data[f'data_{0}'] = new_data[0].flatten()
+            dfs = pd.DataFrame(data)
+
+            # dfssc = pd.DataFrame(sample_score, columns=['score']) # scores of all samples generated at this epoch
+            # dfdsc = pd.DataFrame(data_score, columns=['score']) # scores of all data in at this epoch
+            dfsci = pd.DataFrame({'data_score_mean': [data_score_mean], 'data_score_std': [data_score_std], 
                                   'sample_score_mean': [sample_score_mean], 'sample_score_std': [sample_score_std]})
-                with pd.HDFStore(file_sample, 'a') as hdf_store_samples:
-                    hdf_store_samples.append(key=f'df/samples', value=dfs, format='t') 
-                    hdf_store_samples.append(key=f'df/scores_sample', value=dfssc, format='t')
-                    hdf_store_samples.append(key=f'df/scores_data', value=dfdsc, format='t')
-                    hdf_store_samples.append(key=f'df/score_data_sample_info', value=dfsci, format='t')
+
+            with pd.HDFStore(file_sample, 'a') as hdf_store_samples:
+                hdf_store_samples.append(key=f'df/samples', value=dfs, format='t') 
+                # hdf_store_samples.append(key=f'df/scores_sample', value=dfssc, format='t')
+                # hdf_store_samples.append(key=f'df/scores_data', value=dfdsc, format='t')
+                hdf_store_samples.append(key=f'df/score_data_sample_info', value=dfsci, format='t')
+
+
+
+def gan_sampling(expr_id, n_samples=36, train_name=None, test_name=None):
+
+    from utils_plotly_gan import get_params
+
+    method = expr_id.split('_')[0] 
+    params = get_params(method, expr_id)
+    params.save_fig, params.save_hdf = False, True
+    
+    params.n_samples = n_samples
+    dataset_name = params.dataset
+
+    params.train_name = train_name
+    params.test_name = test_name
+
+    
+    model = select_model_gan(model_info=params.model, data_dim=params.data_dim, z_dim=params.z_dim, device=device)
+    dataloader = select_dataset(dataset_name=dataset_name, batch_size=params.batch_size)
+    params.save_dir = f"{params.save_dir}/{dataset_name}"
+    dataset_mini = torch.cat([next(iter(dataloader))[0], next(iter(dataloader))[0]])
+    x_batch = next(iter(dataloader))[0]
+    params.dataset_mini = dataset_mini
+    
+    expr_checkpoint = torch.load(f'{params.save_dir}/saved_models/{expr_id}.pt', weights_only=False)
+    model.load_state_dict(expr_checkpoint['model_state_dict'])
+
+    print(f"Last saved epoch => {expr_checkpoint['epoch']}")
+    gan = GAN_Sampler(model=model, dataloader=dataloader, expr_id=expr_id)
+    print(f'\n {expr_id}\n')
+    gan.sampling(n_samples=n_samples, z_dim=params.z_dim, params=params, device=device)
+
+
 
 if __name__=='__main__':
 
     method = 'GAN-RKL'
-
+    expr_id = 'GAN-RKL_GANMNIST_2_16_MNIST_z_dim_8_lr_dsc_1e-4_lr_gen_1e-4_loss_dsc_stan_lc_0.5_0.5_1_loss_gen_heur_lc_1'
+    gan_sampling(expr_id)
     params = parse_args(method, 'sampling')
     params.method = method
     set_seed(params.seed)
@@ -129,8 +173,6 @@ if __name__=='__main__':
         ['loss_gen:', loss_gen],
         ['dataset_name:', dataset_name],
         ['batch_size:', params.batch_size],
-        ['total_size:', params.total_size],
-        ['normalize:', params.normalize],
         ['n_epochs:', n_epochs],
         ['lr_gen:' , lr_gen],
         ['lr_dsc:' , lr_dsc],
@@ -149,18 +191,19 @@ if __name__=='__main__':
     expr_id += f'_loss_gen_{loss_gen}'
     if lc_dsc:
         expr_id += f'_lc_{lc_gen_id}'
-    if params.normalize:
-        expr_id += '_norm'
+
         
     
     model = select_model_gan(model_info=model_name, data_dim=data_dim, z_dim=z_dim, device=device)
-    dataloader, dataset, scaler = select_dataset(dataset_name=dataset_name, batch_size=params.batch_size, total_size=params.total_size, normalize=params.normalize)
-    params.dataset = dataset
-    model.load_state_dict(torch.load(f'{params.save_dir}/saved_models/{expr_id}.pth'))
+    dataloader = select_dataset(dataset_name=dataset_name, batch_size=params.batch_size)
+    dataset_mini = torch.cat([next(iter(dataloader))[0], next(iter(dataloader))[0]])
+
+    expr_info = torch.load(f'{params.save_dir}/saved_models/{expr_id}.pt', weights_only=False)
+    model.load_state_dict(expr_info['model_state_dict'])
 
     gan = GAN_Sampler(model=model, dataloader=dataloader, expr_id=expr_id)
     print(f'\n {expr_id}\n')
-    gan.sampling(n_samples=n_samples, data_dim=data_dim, z_dim=z_dim, normalize=params.normalize, scaler=scaler, params=params, device=device)
+    gan.sampling(n_samples=n_samples, z_dim=z_dim, params=params, device=device)
 
 
 

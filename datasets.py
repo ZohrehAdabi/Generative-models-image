@@ -18,7 +18,7 @@ def load_data(dataset_name):
         transform = transforms.Compose([
             transforms.Resize((32, 32)),
             transforms.ToTensor(),  # Converts to tensor and scales pixel values to [0, 1]
-            transforms.Normalize((0.5,), (0.5,))  # Normalize with mean and std of 0.5 for grayscale
+            transforms.Normalize((0.5,), (0.5,))  # Normalize with mean and std of 0.5 for grayscale # Normalize to [-1, 1]
         ])
         data_root = './dataset'
         dataset = datasets.MNIST(

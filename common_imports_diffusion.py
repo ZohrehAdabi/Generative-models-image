@@ -14,7 +14,9 @@ from colorama import Fore
 from tabulate import tabulate
 from torch.utils.data import DataLoader
 
+# device cuda or cpu
 from configs import run_float64, save_dir, device
+
 from beta_scheduling import select_beta_schedule
 from models import select_model_diffusion
 from datasets import select_dataset
@@ -29,6 +31,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
+    torch.use_deterministic_algorithms(True)
     # if run_float64: torch.set_default_dtype(torch.float64)
     torch.set_default_dtype(torch.float64) if run_float64 else torch.set_default_dtype(torch.float32)
 

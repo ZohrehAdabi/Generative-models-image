@@ -94,94 +94,21 @@ def get_dataset_name(method, expr_id):
     
 
 
-def read_hdf(file):
 
-    hdf_file = pd.HDFStore(file)   
-    keys = hdf_file.keys()[3:-1]
 
-    df_sample = hdf_file[keys[-1]]
-    df_data = hdf_file['/df/data']
-   
-    n_samples = hdf_file['/df/info']['n_samples'].values[0]
-    df_score_info = hdf_file['/df/score_data_sample_info']
+def read_hdf_loss(file):
 
-    hdf_file.close()
+    # df_loss = pd.read_hdf(file) 
+    with pd.HDFStore(file) as df:
+        df_loss_epoch = df['df/loss_epoch']
+        df_loss_itr = df['df/loss_itr']  
+    
+    # df_loss_itr['itr'] = np.arange(df_loss_itr.shape[0])
 
-    return df_sample, df_data, df_score_info, n_samples
+    df_loss_epoch = df_loss_epoch.reset_index(drop=True)
+    df_score = df_loss_epoch.loc[:, ['epoch', 'real_score_epoch', 'fake_score_epoch']]
 
-def read_hdf_train(file):
-
-    try:
-        hdf_file = pd.HDFStore(file)   
-        # print(smple.keys())
-        keys = hdf_file.keys()
-        # for k in keys:
-        #     print(k)
-        df_sample = pd.DataFrame()
-        df_score_info = pd.DataFrame()
-
-        epoch_list = []
-        for k in keys:
-            if 'samples' in k:         
-                epoch_list.append(int(k.split('/')[2].split('_')[2]))
-                key_sample = k
-            elif 'score_data_sample_info' in k:
-                key_score = k
-            elif 'grad_g_z' in k:
-                key_grad = k
-
-        df_sample = hdf_file[key_sample]   
-        df_score_info = hdf_file[key_score]
-        df_grad_g_z = hdf_file[key_grad]
-        df_data = hdf_file['/df/data']
-        n_samples = hdf_file['/df/info']['n_samples'].values[0]
-        hdf_file.close()
-
-    except:
-        print(f'Error in reading hdf file {file}')
-        hdf_file.close()
-        
-    return df_sample, df_data, df_score_info, df_grad_g_z, n_samples
-
-def read_hdf_intermediate_train(file, epoch_key):
-
-    try:
-        hdf_file = pd.HDFStore(file)   
-        # print(smple.keys())
-        keys = hdf_file.keys()
-        # for k in keys:
-        #     print(k)
-        df_intermediate_sample = pd.DataFrame()
-        df_score_hist_info = pd.DataFrame()
-        df_intermediate_grad_g_z = pd.DataFrame()
-
-        epoch_list = []
-        for k in keys:
-            if 'intermediate_smpl' in k:         
-                epoch_list.append(int(k.split('/')[2].split('_')[3]))
-
-        if epoch_key > len(epoch_list):
-            print(f"Warning: last epoch is {epoch_list[-1]} with key= {len(epoch_list)}")
-        else:
-            print(f"Epoch: {epoch_list[epoch_key]}/{epoch_list[-1]}")
-
-        key_sample = f'df/intermediate_smpl_epoch_{epoch_list[epoch_key]:06}'
-        key_score = f'df/score_data_sample_hist_{epoch_list[epoch_key]:06}'
-        key_grad = f'df/intermediate_grad_g_z_{epoch_list[epoch_key]:06}'
-        df_intermediate_sample = hdf_file[key_sample]   
-        df_score_hist_info = hdf_file[key_score]
-        df_intermediate_grad_g_z = hdf_file[key_grad]
-        df_data = hdf_file['/df/data']
-        n_samples = hdf_file['/df/info']['n_samples'].values[0]
-        grid_size = hdf_file['/df/info']['grid_size'].values[0]
-        n_sel_time = hdf_file['/df/info']['n_sel_time'].values[0]
-        hdf_file.close()
-
-    except:
-        print(f'Error in reading hdf file {file}')
-        hdf_file.close()
-        
-    return df_intermediate_sample, df_data, df_score_hist_info, df_intermediate_grad_g_z, n_samples, grid_size, n_sel_time
+    return df_loss_epoch.loc[:, ['epoch', 'loss_dsc_epoch', 'loss_gen_epoch']], df_loss_itr.reset_index(drop=True), df_score
 
 def read_hdf_all_epochs_train(file):
 
@@ -189,22 +116,26 @@ def read_hdf_all_epochs_train(file):
         hdf_file = pd.HDFStore(file)   
         # print(smple.keys())
         keys = hdf_file.keys()
-        # for k in keys:
-        #     print(k)
-        df_sample = pd.DataFrame()
+        
+        image_shape = hdf_file['/df/info']['image_shape'].values[0]
+        image_shape = list(map(int, image_shape.split(',')))
+        n_sel_time = hdf_file['/df/info']['n_sel_time'].values[0]
+
+        df_sample =[]
         df_score_info = pd.DataFrame()
         df_score_info_hist = pd.DataFrame()
-        # df_grad_g_z = pd.DataFrame()
-        # df_grad_g_z_at_sampling = pd.DataFrame()
+        
         df_fake_data = pd.DataFrame()
         # df_intermediate_smpl = pd.DataFrame()
         df_intermediate_smpl_list = []
-        df_grad_g_z_list = []
+        
         epoch_list = []
         for k in keys:
             if 'samples' in k: 
-                df_sample = pd.concat([df_sample if not df_sample.empty else None, hdf_file[k]])
-                epoch_list.append(int(k.split('/')[2].split('_')[2]))
+                smpl = hdf_file[k]['data_0'].to_numpy().reshape(image_shape)
+                df_sample.append(smpl)
+                if 'epoch_' in k:
+                    epoch_list.append(int(k.split('/')[2].split('_')[2]))
             elif 'intermediate_smpl'in k:
                 # df_intermediate_smpl = pd.concat([df_intermediate_smpl if not df_intermediate_smpl.empty else None, hdf_file[k]])
                 df_intermediate_smpl_list.append(hdf_file[k])
@@ -214,143 +145,72 @@ def read_hdf_all_epochs_train(file):
                 df_score_info_hist = pd.concat([df_score_info_hist if not df_score_info_hist.empty else None, hdf_file[k]])
             # elif 'grad_g_z_at_sampling' in k:
             #     # df_grad_g_z_at_sampling = pd.concat([df_grad_g_z_at_sampling if not df_grad_g_z_at_sampling.empty else None, hdf_file[k]]) 
-            elif 'grad_g_z' in k:
-                # df_grad_g_z = pd.concat([df_grad_g_z if not df_grad_g_z.empty else None, hdf_file[k]])
-                df_grad_g_z_list.append(hdf_file[k])
+          
             elif 'fake_data' in k:
                 df_fake_data = pd.concat([df_fake_data if not df_fake_data.empty else None, hdf_file[k]])
 
         df_data = hdf_file['/df/data']
         n_samples = hdf_file['/df/info']['n_samples'].values[0]
-        grid_size = hdf_file['/df/info']['grid_size'].values[0]
+        # grid_size = hdf_file['/df/info']['grid_size'].values[0]
         # timesteps_list = hdf_file['/df/sampling_timesteps']['time'].to_numpy()
         hdf_file.close()
     except:
         print(f'Error in reading hdf file {file}')
         hdf_file.close()
 
+    df_data = df_data['data_0'].to_numpy().reshape(image_shape)
+    if df_sample:
+        df_sample = np.stack(df_sample) 
+    if not epoch_list:
+        epoch_list = [0]
+
     return df_sample, df_data, df_intermediate_smpl_list, df_score_info.reset_index(drop=True), \
-            df_score_info_hist, df_grad_g_z_list, epoch_list, n_samples, grid_size
-
-def read_hdf_loss(file):
-
-    df_loss = pd.read_hdf(file)   
-    df_loss_dsc_itr = pd.DataFrame(df_loss.loc[0, ['loss_dsc_itr']].values[0], columns=['loss_dsc_itr'])
-    df_loss_gen_itr = pd.DataFrame(df_loss.loc[0, ['loss_gen_itr']].values[0], columns=['loss_gen_itr'])
-    
-    for i in range(1, df_loss.shape[0]):
-        df_loss_dsc_itr = pd.concat([df_loss_dsc_itr, pd.DataFrame(df_loss.loc[i, ['loss_dsc_itr']].values[0], columns=['loss_dsc_itr'])])
-        df_loss_gen_itr = pd.concat([df_loss_gen_itr, pd.DataFrame(df_loss.loc[i, ['loss_gen_itr']].values[0], columns=['loss_gen_itr'])])
-    df_loss_dsc_itr['itr'] = np.arange(df_loss_dsc_itr.shape[0])
-    df_loss_gen_itr['itr'] = np.arange(df_loss_gen_itr.shape[0])
-
-    df_score = df_loss.loc[:, ['epoch', 'real_score_epoch', 'fake_score_epoch']]
-    return df_loss.loc[:, ['epoch', 'loss_dsc_epoch', 'loss_gen_epoch']], df_loss_dsc_itr.reset_index(drop=True), df_loss_gen_itr.reset_index(drop=True), df_score
-
-def prepare_df_all_epochs_for_plotly(df_sample, df_grad_g_z, df_score_info, epoch_list, n_samples, grid_size):
-
-    df_sample['epoch'] = np.repeat(epoch_list, n_samples)
-    # df_sample['type'] = [f'sample_{i}' for i in range(1, n_samples+1)] * len(epoch_list)
-    # if df_data.shape[0] > 2000:
-    #     df_data = df_data.loc[np.linspace(0, df_data.shape[0]-1, 2000, dtype=int), :]
-    # n_data = df_data.shape[0]
-    # df_data = pd.concat([df_data] * len(epoch_list)).reset_index(drop=True)
-    # df_data['epoch'] = np.repeat(epoch_list, n_data)
-    # df_data['type'] = [f'data_{i}' for i in range(1, n_data+1)] * len(epoch_list)
-
-    # n_data = df_fake_sample.shape[0]
-    # df_fake_sample = pd.concat([df_fake_sample] * len(epoch_list)).reset_index(drop=True)
-    # df_fake_sample['epoch'] = np.repeat(epoch_list, n_data)
-    # df_fake_sample['type'] = [f'grid_sample_{i}' for i in range(1, n_data+1)] * len(epoch_list)
-
-    df_grad_g_z['epoch'] = np.repeat(epoch_list, grid_size**2)
-    df_score_info['epoch'] = epoch_list
-
-    animation_frame = 'epoch'
-    return df_sample, df_grad_g_z, df_score_info, animation_frame
-
-def prepare_plotly_fig(df_sample, df_data, animation_frame='time'):
-
-    if animation_frame=='time':
-        df_sample = df_sample[::-1].reset_index(drop=True)
-    fig_smpl = px.scatter(df_sample, x='x', y='y', animation_frame=animation_frame, width=600, height=600, 
-                  animation_group='type', range_x=[-2.5, 2.5], range_y=[-2.5, 2.5]
-                  )  
-    fig_data = px.scatter(df_data, x='data_x', y='data_y', animation_frame=animation_frame, width=600, height=600, 
-                    animation_group='type', range_x=[-2.5, 2.5], range_y=[-2.5, 2.5])
-    fig_smpl['data'][0]['showlegend'] = True
-    fig_data['data'][0]['showlegend'] = True
-
-    for trace in fig_smpl.data:   # first display
-            trace.update(marker=dict(size=5, color='#AB63FA'), name='sample')  # ''
-
-    for fr in fig_smpl.frames:# on animation frames
-        fr['data'][0]['showlegend'] = True    
-        for trace in fr.data:    
-            trace.update(marker=dict(size=5, color='#AB63FA'), name='sample')
-
-    for trace in fig_data.data:   # first display
-            trace.update(marker=dict(size=5, color='#19D3F3'), name='data')  # '' 
-
-    for fr in fig_data.frames:# on animation frames
-        fr['data'][0]['showlegend'] = True    
-        for trace in fr.data:    
-            trace.update(marker=dict(size=5, color='#19D3F3'), name='data')
-
-    return fig_smpl, fig_data
+            df_score_info_hist, epoch_list, n_samples
 
 
-
-
-def add_all_zeros_animation(df_sample, df_grad_g_z_list, df_grid_samples, epoch_list, colors, quiver_name='grad'):
+def add_all_zeros_animation(df_sample, epoch_list):
     # create frames for each animation [epochs], all zeros samples are in one df: df_sample
     
-    
-    px_anim_sample = px.scatter(df_sample, x='x', y='y', animation_frame='epoch')
-    xy = df_grid_samples
-    x, y = xy['x'].to_numpy(),  xy['y'].to_numpy() # inputs of ff.create_quiver must be numpy or pandas not tensor to function faster
-    quiver_data = []
-    for dfg in df_grad_g_z_list:
-        u, v = dfg['u'],  dfg['v']
-        # u, v = u.reshape(-1, grid_size), v.reshape(-1, grid_size)
-        scale = np.sqrt(np.linalg.norm(x) / np.linalg.norm(u)) + np.sqrt(np.linalg.norm(y) / np.linalg.norm(v))
-                    # u is added to x and v is added to y.
-        fig_quiver = ff.create_quiver(x, y, u, v, scale=scale, name=f'{quiver_name}', arrow_scale=.2,
-                                                angle=40*np.pi/180, line=dict(width=1, color=colors['grad']))
-        quiver_data.append([fig_quiver.data[0]])
+    if df_sample.ndim == 3:
+        df_sample = df_sample[None, :, :, :]
+    px_anim_sample = px.imshow(df_sample.squeeze(-1), animation_frame=0, binary_string=True, binary_compression_level=4)
 
-    all_zero_sample_frames = [go.Frame(data=[go.Scatter(x=smpl_frame.data[0].x, y=smpl_frame.data[0].y,  mode='markers', showlegend=True, 
-                                             line=dict(color=colors['sample']), name=f'sample', hovertemplate='x=%{x}<br>y=%{y}'),
-                                             ] + grad_frame,  
-                            traces=[1, 2], name=f'zero_epoch_{e}', group=f'all_zero')  
-                            for e, smpl_frame, grad_frame in zip(epoch_list, px_anim_sample.frames, quiver_data)]
-
+    all_zero_sample_frames = [go.Frame(data=[smpl_frame.data[0].update(name='sample')]
+                                , traces=[0], name=f'zero_epoch_{e}', group=f'all_zero')
+                                            for e, smpl_frame in zip(epoch_list, px_anim_sample.frames)]
     return all_zero_sample_frames 
 
+def add_data_trace(fig, df_data):
 
-def add_data_sammple_trace(fig, df_data, all_zero_sample_frames, epoch_list, colors):
-
-    # data, sample_zero at first epoch , grad at first epoch
-    fig.add_trace(go.Scatter(x=df_data['data_x'], y=df_data['data_y'], mode='markers', line=dict(color=colors['data']), name=f'data',
-                            visible=True, showlegend=True, hovertemplate='x=%{x}<br>y=%{y}'))
-    fig.add_trace(go.Scatter(x=all_zero_sample_frames[0].data[0].x, y=all_zero_sample_frames[0].data[0].y, mode='markers', 
-                             line=dict(color=colors['sample']), name=f'sample', visible=True, showlegend=True, hovertemplate='x=%{x}<br>y=%{y}'))
-    fig.add_trace(go.Scatter(x=all_zero_sample_frames[0].data[1].x, y=all_zero_sample_frames[0].data[1].y, mode='lines', 
-                             line=dict(color=colors['grad']), name=f'grad', visible=True, showlegend=True, hovertemplate='x=%{x}<br>y=%{y}'))
+    # data
+    fig.add_trace(px.imshow(df_data.squeeze(), binary_string=True).data[0].update(name='data', visible=False))
+    
+    gray = df_data.squeeze()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    alpha = np.full(gray.shape, 25, dtype=np.uint8)  # 255 Fully opaque
+    rgba = np.concatenate([rgb, alpha[..., None]], axis=-1)
+    fig.add_trace(px.imshow(rgba, binary_string=True).data[0].update(name='data_transparnce', visible=False))
     
     return fig
 
-def add_statistics_to_fig(fig, df_loss_dsc_itr, df_loss_gen_itr, df_loss, df_score):
+def add_sammple_trace(fig, all_zero_sample_frames):
+
+    # data, sample_zero at first epoch , grad at first epoch
+    fig.add_trace(all_zero_sample_frames[0].data[0].update(name=f'sample_{0}', visible=True))
+       
+    return fig
+
+def add_statistics_to_fig(fig, df_loss_itr, df_loss, df_score):
 
     # add traces of statistics
   
-    x = df_loss_dsc_itr['itr']
-    y_dsc = (np.cumsum(df_loss_dsc_itr['loss_dsc_itr']) / x)
-    y_dsc[0] = df_loss_dsc_itr['loss_dsc_itr'][0]
-    y_gen = (np.cumsum(df_loss_dsc_itr['loss_gen_itr']) / x)
-    y_gen[0] = df_loss_dsc_itr['loss_gen_itr'][0]
-    fig.add_trace(go.Scatter(x=x, y=df_loss_dsc_itr['loss_dsc_itr'], name="Loss D", mode='lines', visible=False, showlegend=True, line=dict(width=1, color='limegreen')))
-    fig.add_trace(go.Scatter(x=x, y=df_loss_gen_itr['loss_gen_itr'], name="Loss G", mode='lines', visible=False, showlegend=True, line=dict(width=1, color='crimson'))) 
+    x = df_loss_itr['itr']
+    y_dsc = (np.cumsum(df_loss_itr['loss_dsc_itr']) / x)
+    y_dsc[0] = df_loss_itr['loss_dsc_itr'][0]
+    y_gen = (np.cumsum(df_loss_itr['loss_gen_itr']) / x)
+    y_gen[0] = df_loss_itr['loss_gen_itr'][0]
+    fig.add_trace(go.Scatter(x=x, y=df_loss_itr['loss_dsc_itr'], name="Loss D", mode='lines', visible=False, showlegend=True, line=dict(width=1, color='limegreen')))
+    fig.add_trace(go.Scatter(x=x, y=df_loss_itr['loss_gen_itr'], name="Loss G", mode='lines', visible=False, showlegend=True, line=dict(width=1, color='crimson'))) 
     fig.add_trace(go.Scatter(x=x, y=y_dsc, name="Loss D mean", mode='lines', visible=False, showlegend=True, line=dict(width=2, color='darkgreen')))
     fig.add_trace(go.Scatter(x=x, y=y_gen, name="Loss G mean", mode='lines', visible=False, showlegend=True, line=dict(width=2, color='deeppink')))
     x = df_loss['epoch']
@@ -409,7 +269,7 @@ def visibility_traces(fig):
     # 'Loss D', 'Loss G', 'Loss D mean', 'Loss G mean', 
     # 'D(x)', 'D(G(z))', 'D(x) std', 'D(G(z)) std', 'D(x) mean', 'D(G(z)) mean', 'D*']
     
-    trace_visibility['data'] = True
+    trace_visibility['data'] = False
     
 
     trace_vis_loss_itr = trace_visibility.copy()
@@ -425,12 +285,15 @@ def visibility_traces(fig):
 
     return trace_visibility, stats_trace_vis
 
-def visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_statistics):
+def visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_statistics, just_loss=False, training=False):
 
     # store idx of other buttons that adding to the layout for making visible True or False
     stats_idx = n_button_animations
     pause_idx = n_button_animations + n_button_statistics
-    back_stats_idx = pause_idx + 1
+    if just_loss:
+        back_stats_idx = pause_idx 
+    else:
+        back_stats_idx = pause_idx + 1 if training else pause_idx
     back_detail_idx = back_stats_idx + 1
     select_dropdown_idx = back_detail_idx + 1 
      
@@ -438,62 +301,65 @@ def visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_stat
     button_visibility = {}
     for i in range(n_all_buttons):
         button_visibility[f'updatemenus[{i}].visible'] = False 
-    button_visibility[f'updatemenus[{pause_idx}].visible'] = True
+    button_visibility[f'updatemenus[{pause_idx}].visible'] = True if training else False
     button_visibility[f'updatemenus[{select_dropdown_idx}].visible'] = True
 
     return button_visibility, stats_idx, pause_idx, back_stats_idx, back_detail_idx, select_dropdown_idx
 
-def add_play_show_buttons_slider(trace_visibility, button_visibility, button_info, slider_info, epoch_list):
+def add_play_show_buttons_slider(trace_visibility, button_visibility, button_info, slider_info, epoch_list, training=False):
     
     play_button_list = []
     select_button_list = [] #drop down button
 
     # Play buttons for sampling
-    frame_spec = {'frame': {'duration': 300, 'redraw': False}, 'fromcurrent': True, 'mode': 'immediate', 
+    frame_spec = {'frame': {'duration': 300, 'redraw': True}, 'fromcurrent': True, 'mode': 'immediate', 
               'transition': {'duration': 20, 'easing': 'cubic-in-out'}}
     
+    if training:
+        zero_play_button = dict(buttons=[dict(label=f"{f'&#9654; zeros':^16}", method='animate', args=[f'all_zero' , frame_spec])])
+        zero_play_button.update(button_info)
+        zero_play_button.update(dict(x=-0.22, y=0.001))
 
-    zero_play_button = dict(buttons=[dict(label=f"{f'&#9654; zeros':^16}", method='animate', args=[f'all_zero' , frame_spec])])
-    zero_play_button.update(button_info)
-    zero_play_button.update(dict(x=-0.22, y=0.001))
-
-    play_button_list.append(zero_play_button)
+        play_button_list.append(zero_play_button)
     # slider for zero play button
     
-    all_zero_slider = dict(steps=[dict(args=[[f'zero_epoch_{e}'], {'frame': {'duration': 0, 'redraw': False}, 'mode': 'immediate' }], 
+    all_zero_slider = dict(steps=[dict(args=[[f'zero_epoch_{e}'], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate' }], 
                                 method='animate', label=f'{e}' ) for e in epoch_list] )
     all_zero_slider.update(slider_info)
 
-    visibility_layout = {'title': f'All zeros'}
+    visibility_layout = {'title': f'Sampling'}
     visibility_layout.update(button_visibility)
-    visibility_layout[f'updatemenus[0].visible'] = True # show play zeros buttons
+    visibility_layout[f'updatemenus[0].visible'] = True if training else False# show play zeros buttons
     visibility_layout['sliders'] = [all_zero_slider] 
 
     # add fist button to dropdwon 
     trace_vis_init = trace_visibility.copy()
-    trace_vis_init.update({f'sample': True, f'grad': True})
-    select_button_list.append(dict(label=f'Show all zeros', method='update', 
+    trace_vis_init.update({f'sample_0': True})
+    select_button_list.append(dict(label=f'Show all samples' if training else 'Show sample ', method='update', 
                                 args=[{'visible': list(trace_vis_init.values())}, visibility_layout]))
 
     vis_layout = visibility_layout.copy()
-    vis_layout[f'updatemenus[0].visible'] = False
+    vis_layout[f'updatemenus[0].visible'] = False if training else True
 
 
-    select_button_list.append(dict(label=f'', method='update',  args=[None]))
+    # select_button_list.append(dict(label=f'', method='update',  args=[None]))
 
     return play_button_list, select_button_list, all_zero_slider
 
 def add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, n_button_animations, button_info, method,
-                      back_stats_idx, pause_idx, select_dropdown_idx):
+                      back_stats_idx, pause_idx, select_dropdown_idx, just_loss=False):
 
     # Show all stats buttons (loss, score)
     stats_button_list = []
-    show_stats = {'title': method, 'width':1000, 'height': 450, 'xaxis.autorange': True, 'yaxis.autorange': True} 
-                  #'xaxis.range': [-2, 9], 'yaxis.range': [-3, 7]
+    show_stats = {'title': method, 'width':1000, 'height': 450, 'plot_bgcolor': None, 
+                    'xaxis': {'range': None, 'autorange': True, 'title': 'x', 'showgrid': True,'showticklabels': True},
+                    'yaxis': {'range': None, 'autorange': True, 'title': 'y', 'showgrid': True,'showticklabels': True, 
+                               'type': 'log'} }
+
     show_stats['sliders'] = []
     show_stats.update(button_visibility) 
     show_stats[f'updatemenus[{back_stats_idx}].visible'] = True
-    show_stats[f'updatemenus[{pause_idx}].visible'] = False
+    show_stats[f'updatemenus[{pause_idx}].visible'] = False if not just_loss else True
     show_stats[f'updatemenus[{select_dropdown_idx}].visible'] = False 
     
     stats_lables = ['Loss itr', 'Loss epoch', 'Score', 'Score mean']
@@ -512,7 +378,32 @@ def add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, n
     show_stats_button = dict(label=f'Show Loss-Score', method='update', args=[{'visible': list(stats_vis.values())}, show_stats])
 
     return stats_button_list, show_stats_button
+
+def add_data_button(button_visibility, trace_visibility, pause_idx):
+
+    trace_vis = trace_visibility.copy()
+    trace_vis.update({f'data': True})
     
+    # Show data
+    show_data = {'title': f'Data', 'height': 500} 
+    show_data.update({  'xaxis': {'title': '', 'showticklabels': False, 'autorange':True, 'range': None}, 
+                        'yaxis': {'title': '', 'showticklabels': False, 'autorange':'reversed', 'range': None}
+                        })
+            
+    show_data['sliders'] = []
+    show_data.update(button_visibility) 
+    
+    # show_smpl_grd_ns[f'updatemenus[{back_smpl_grad_noise_norm_idx}].visible'] = True
+    show_data[f'updatemenus[{pause_idx}].visible'] = False
+    # show_smpl_grd_ns[f'updatemenus[{select_dropdown_idx}].visible'] = False 
+
+    # Show smpl score in select button [dropdown]
+
+    show_data_button = dict(label=f'data', method='update', args=[{'visible': list(trace_vis.values())}, 
+                                                                  show_data])
+
+    return show_data_button
+     
 def add_detail_button(trace_visibility, button_visibility, config, back_detail_idx, pause_idx, select_dropdown_idx):
 
     # show details  in select button [dropdown ]
@@ -537,9 +428,9 @@ def add_detail_button(trace_visibility, button_visibility, config, back_detail_i
     show_detail['title.text'] = title_text
     show_detail['sliders'] = []
     
-    show_detail.update({'margin.t':100, 'title.y': 0.6, 'title.x':0.2, 'xaxis.range': [-2.5, 2.5], 'yaxis.range': [-2.5, 2.5], 
-                            'xaxis.tickvals': [], 'yaxis.tickvals': [], 'xaxis.title': '', 'yaxis.title': ''
-                            }) 
+    show_detail.update({'margin.t':100, 'title.y': 0.6, 'title.x':0.2,
+                        'xaxis': {'title': '', 'showticklabels': False, 'range': [-2.5, 2.5]}, 
+                        'yaxis': {'title': '', 'showticklabels': False, 'range': [-2.5, 2.5]}})
     show_detail.update(dict(plot_bgcolor='white', height=450))
     hide_traces = trace_visibility.copy()
     hide_traces['data'] = False
@@ -551,15 +442,18 @@ def add_detail_button(trace_visibility, button_visibility, config, back_detail_i
 def add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_info, method,
                      back_detail_idx, stats_idx, select_dropdown_idx, back_stats_idx):
 
-    hide_info = {'margin.t': 60, 'title.y': 0.98, 'title.x':0.001, 'showlegend': True, 'plot_bgcolor': None, 'width':750, 'height': 570,
-                'xaxis.tickvals': None, 'yaxis.tickvals': None, 'xaxis.range': [-2.5, 2.5], 'yaxis.range': [-2.5, 2.5], 
-                'xaxis.autorange': False, 'yaxis.autorange': False, 'xaxis.title': 'x', 'yaxis.title': 'y'}
+    hide_info = {'margin.t': 60, 'title.y': 0.98, 'title.x':0.001, 'plot_bgcolor': 'white', 'width':750, 'height': 500,
+                'xaxis': {'range': None, 'autorange': True, 'title': '', 'showgrid': False, 'showticklabels': False},
+                'yaxis': {'range': None, 'autorange': 'reversed', 'title': '', 'showgrid': False, 'showticklabels': False, 'type': 'linear'},
+                }
 
     slider_steps = dict(steps=[dict(args=[[None]], method='animate', label=f'{j}' ) for j in range(2)])
     slider_steps.update(slider_info)
     slider_steps.update({'currentvalue': dict(font_size=12, prefix= f'', xanchor='left')})
-    hide_info['sliders'] = [slider_steps]
-
+    # hide_info['sliders'] = [slider_steps]
+    hide_info['sliders'] = []
+    trace_vis = trace_visibility.copy()
+    trace_vis['data_transparnce'] = True
     # add back button [stats]
     hide_stats = {'title': method}
     hide_stats.update(hide_info)
@@ -570,7 +464,7 @@ def add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_
     
     hide_stats[f'updatemenus[{select_dropdown_idx}].visible'] = True
     hide_stats[f'updatemenus[{back_stats_idx}].visible'] = False
-    back_stats_button = dict(buttons=[dict(label=f"{f'&#129092;':^5}", method='update', args=[{'visible': list(trace_visibility.values())}, hide_stats])]) 
+    back_stats_button = dict(buttons=[dict(label=f"{f'&#129092;':^5}", method='update', args=[{'visible': list(trace_vis.values())}, hide_stats])]) 
     back_stats_button.update(button_info)
     back_stats_button.update(dict(visible=False, x=0.1, y=1.02, font=dict(size=15)))
 
@@ -579,7 +473,7 @@ def add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_
     hide_detail.update(hide_info) 
     hide_detail[f'updatemenus[{select_dropdown_idx}].visible'] = True
     hide_detail[f'updatemenus[{back_detail_idx}].visible'] = False
-    back_detail_button = dict(buttons=[dict(label=f"{f'&#129092;':^5}", method='update', args=[{'visible': list(trace_visibility.values())}, hide_detail])]) 
+    back_detail_button = dict(buttons=[dict(label=f"{f'&#129092;':^5}", method='update', args=[{'visible': list(trace_vis.values())}, hide_detail])]) 
     back_detail_button.update(button_info)
     back_detail_button.update(dict(visible=False, x=0.1, y=1.02, font=dict(size=15)))
     
@@ -587,88 +481,119 @@ def add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_
     
 
 
-
-
-def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list, df_grid_samples,
-                                df_grad_g_z_list, df_score_info, df_score_info_hist,
-                                df_loss_dsc_itr, df_loss_gen_itr, df_loss, df_score,
-                                epoch_list, quiver_name, method, config,
-                                width=750, height=570, range_x=[-2.5, 2.5], range_y=[-2.5, 2.5]):
+def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_score_info, df_score_info_hist,
+                                df_loss_itr, df_loss, df_score,
+                                epoch_list, quiver_name, method, config,  just_loss=False, training=True,
+                                width=750, height=570):
 
     # The traces must be added in the correct order for the button's visibility to function properly
    
     num_epochs = len(epoch_list)
     colors = dict(sample='#AB63FA', grad='DarkSlateGrey', data='#19D3F3') # samples-grads-data
-    # create frames for each animation [epochs], all zeros samples are in one df: df_sample
-    all_zero_sample_frames = add_all_zeros_animation(df_sample, df_grad_g_z_list, df_grid_samples, epoch_list, colors, quiver_name)
+    if not just_loss:
+        # create frames for each animation [epochs], all zeros samples are in one df: df_sample
+        all_zero_sample_frames = add_all_zeros_animation(df_sample, epoch_list)
 
     fig = go.Figure() 
-    # data, sample_zero at first epoch , grad at first epoch
-    fig = add_data_sammple_trace(fig, df_data, all_zero_sample_frames, epoch_list, colors)
+
+    if not just_loss:
+        # data, sample_zero at first epoch , grad at first epoch
+        fig = add_sammple_trace(fig, all_zero_sample_frames)
 
     # add traces of statistics
-    fig = add_statistics_to_fig(fig, df_loss_dsc_itr, df_loss_gen_itr, df_loss, df_score)
-
+    if training:
+        fig = add_statistics_to_fig(fig, df_loss_itr, df_loss, df_score)
+    # add data
+    fig = add_data_trace(fig, df_data)
     # visibility of traces when coresponding button is clicked
     trace_visibility, stats_trace_vis = visibility_traces(fig)
-
-    n_button_animations = 1  # 1: for all_zeros button # equals to plays buttons
-    n_button_statistics = 4 # loss itr, loss epoch, score epoch, score mean & std
-    n_all_buttons = n_button_animations + n_button_statistics + 2 + 2  # show stats, show detail, show eval, 
-                                                                            # back_stats, back_detail, back_eval
+    if just_loss:
+        n_button_animations = 0
+    else:
+        n_button_animations = (1 if training else 0)  # 1: for all_zeros button # equals to plays buttons
+    
+    n_button_statistics = 4 if training else 0# loss itr, loss epoch, score epoch, score mean & std
+    
+    if training:
+        n_all_buttons = n_button_animations + n_button_statistics + 2 + 2  # show stats, show detail, show eval, 
+    else:
+        n_all_buttons = n_button_animations + 2                                                                       # back_stats, back_detail, back_eval
     # n_traces_animation = 1 + 1 +  num_epochs # 1:data, 1: grad first epoch, len(epoch_list): samples of each epoch
     # n_traces_statistics = 4 + 4 + 2 + 4 + 1 # 4: loss itr 4: loss epoch, 2: score epoch, 4: score mean & std, 1 is for D*
 
     # store idx of other buttons that adding to the layout for making visible True or False
     # buttons visibility
     button_visibility, stats_idx, pause_idx, \
-    back_stats_idx, back_detail_idx, select_dropdown_idx = visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_statistics)
+    back_stats_idx, back_detail_idx, select_dropdown_idx = visibility_buttons_and_idx(n_all_buttons, n_button_animations, 
+                                                                                      n_button_statistics, just_loss, training)
 
     button_info = dict(visible=True, type='buttons', direction='down', showactive=False, pad={"r": 10, "t": 10, "l": 10}, 
                          xanchor="right", yanchor="bottom", bgcolor='seashell')
     slider_info = dict(active=0, name=f'all_epoch', visible=True, currentvalue=dict(font_size=12, prefix=f'zero of epoch: ', xanchor='left'),
                  transition=dict(duration=300, easing='cubic-in-out'), pad=dict(b=10, t=60), len=1, x=0.0, y=0.08, xanchor='left', yanchor='top')
-    # add play buttons, show buttons
-    play_button_list, select_button_list, all_zero_slider = add_play_show_buttons_slider(trace_visibility, button_visibility, 
-                                                                                         button_info, slider_info, epoch_list)
-    # show all stats buttons (loss, score)
-    stats_button_list, show_stats_button = add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, 
-                                                             n_button_animations, button_info, method,
-                                                                back_stats_idx, pause_idx, select_dropdown_idx)
+    
+    all_zero_slider = dict()
+    if not just_loss:
+        # add play buttons, show buttons
+        play_button_list, select_button_list, all_zero_slider = add_play_show_buttons_slider(trace_visibility, button_visibility, 
+                                                                                      button_info, slider_info, epoch_list, training)
+    if training:          
+        # show all stats buttons (loss, score)
+        stats_button_list, show_stats_button = add_stats_buttons(button_visibility, stats_trace_vis, n_button_statistics, 
+                                                                n_button_animations, button_info, method,
+                                                                    back_stats_idx, pause_idx, select_dropdown_idx, just_loss)
 
-
+    
     # show details  in select button [dropdown ]
     show_detail_button = add_detail_button(trace_visibility, button_visibility, config, back_detail_idx, pause_idx, select_dropdown_idx)
     
-    # add pause button
-    pause_button = dict(buttons=[dict(label=f"{f'&#9724;':^5}", method='animate',  args=[[None],  {'frame':{'duration': 0, 'redraw': False}, 
-                                            'mode': 'immediate', 'fromcurrent': True, 'transition': {'duration': 0, 'easing': 'linear'}}])])
-    pause_button.update(button_info)
-    pause_button.update(dict(x=-0.12, y=0.001))
+    show_data_button = add_data_button(button_visibility, trace_visibility, pause_idx)
+    
+    if not just_loss:
+        # add pause button
+        pause_button = dict(buttons=[dict(label=f"{f'&#9724;':^5}", method='animate',  args=[[None],  {'frame':{'duration': 0, 'redraw': False}, 
+                                                'mode': 'immediate', 'fromcurrent': True, 'transition': {'duration': 0, 'easing': 'linear'}}])])
+        pause_button.update(button_info)
+        if not training:
+            pause_button.update(dict(visible=False))
+        pause_button.update(dict(x=-0.12, y=0.001))
 
     # [ back buttons ]
     back_stats_button, back_detail_button = add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_info, 
                                                         method, back_detail_idx, stats_idx, select_dropdown_idx, back_stats_idx)
     
-    button_list = play_button_list + stats_button_list + [pause_button] + [back_stats_button] + [back_detail_button]
 
-    # all buttons          
-    updatemenues = button_list + [dict(buttons=select_button_list[0:1]+[show_detail_button]+[show_stats_button]+select_button_list[1:],
+    # all buttons  
+    if training:
+        if just_loss:
+            button_list = stats_button_list + [back_stats_button] + [back_detail_button]     
+            updatemenues = button_list + [dict(buttons=[show_detail_button]+[show_stats_button]+[show_data_button],
+                                            visible=True, showactive=False, direction='down', pad={"r": 10, "t": 20, "l": 10},
+                                            x=-0.1, xanchor="right", y=1.05, yanchor="top", bgcolor='seashell')]
+        else:   
+            button_list = play_button_list + stats_button_list + [pause_button] + [back_stats_button] + [back_detail_button]     
+            updatemenues = button_list + [dict(buttons=select_button_list[0:1]+[show_detail_button]+[show_stats_button]+select_button_list[1:] + [show_data_button],
+                                            visible=True, showactive=False, direction='down', pad={"r": 10, "t": 20, "l": 10},
+                                            x=-0.1, xanchor="right", y=1.05, yanchor="top", bgcolor='seashell')]
+    else:
+        button_list = play_button_list  + [pause_button]  + [back_detail_button]     
+        updatemenues = button_list + [dict(buttons=select_button_list[0:1]+[show_detail_button]+select_button_list[1:] + [show_data_button],
                                         visible=True, showactive=False, direction='down', pad={"r": 10, "t": 20, "l": 10},
                                         x=-0.1, xanchor="right", y=1.05, yanchor="top", bgcolor='seashell')]
     # print(len(updatemenues))  
     fig.layout=go.Layout(
             updatemenus=updatemenues,
             sliders=[all_zero_slider])
-    frames = all_zero_sample_frames
-    fig.frames = frames
+    if not just_loss:
+        frames = all_zero_sample_frames
+        fig.frames = frames
     # Update layout for better aesthetics
     # scaleanchor='y', scaleratio=1,
     # scaleanchor='x', scaleratio=1,
     fig.update_layout(
         title=dict(text=method, pad={"r": 10, "t": 10, "l": 20, "b":10}, x=0.001, xanchor="left", y=0.98, yanchor="top"),
-        xaxis=dict(title=dict(text="x", font_size=12), range=range_x,  showgrid=True, autorange=False),
-        yaxis=dict(title=dict(text="y", font_size=12), range=range_y,  showgrid=True, autorange=False),
+        xaxis=dict(title=dict(text="x", font_size=12), range=None,  showgrid=True, autorange=True),
+        yaxis=dict(title=dict(text="y", font_size=12), range=None,  showgrid=True, autorange=True),
         # plot_bgcolor='rgba(100, 100, 100, 0)',
         margin=dict(l=80, t=60, b=20, r=150),
         showlegend=True,
@@ -679,31 +604,34 @@ def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list
 
  
 
-def plot_animation(method, expr_id, training=True, epoch_key=-1, all_epochs=False, quiver_name=None, test_name=None):
+def plot_animation(expr_id, training=True, quiver_name=None, train_name=None, test_name=None):
 
+    method = expr_id.split('_')[0] 
     dataset_name, config = get_dataset_name(method, expr_id)
     path = f'saved_result/{method}/{dataset_name}/saved_hdfs_training' if training else f'saved_result/{method}/{dataset_name}/saved_hdfs'
     file = f'{path}/{expr_id}_df_sample_per_epoch.h5' if training else f'{path}/{expr_id}_df_sample.h5'  
-    method_type = f"{method} [{config['loss_dsc']} {config['loss_gen']}]"
+    method_type = f"{method} [{config['loss_dsc']} {config['loss_gen']}]" + ("[training]"  if training else " [sampling]" )
     
+    if train_name is not None:
+        expr_id += train_name 
     if test_name is not None:
        file = f'{path}/{expr_id}_df_sample_{test_name}.h5' 
 
 
-    if training and all_epochs:
-        df_sample, df_data, df_intermediate_smpl_list, df_score_info, df_score_info_hist, df_grad_g_z_list,\
-              epoch_list, n_samples, grid_size = read_hdf_all_epochs_train(file)
+    
+    df_sample, df_data, df_intermediate_smpl_list, df_score_info, df_score_info_hist,\
+                                                    epoch_list, n_samples = read_hdf_all_epochs_train(file)
 
-        grid_samples, grid_x, grid_y = get_fake_sample_grid(grid_size) # for ploting quiver
-        df_grid_samples = pd.DataFrame(grid_samples.numpy(), columns=['x', 'y'])
+    df_loss, df_loss_itr, df_score = None, None, None 
+    if training:
         # get statistics (loss, score) df
         file = f'{path}/{expr_id}_df_loss_per_epoch.h5'
-        df_loss, df_loss_dsc_itr, df_loss_gen_itr, df_score = read_hdf_loss(file)
+        df_loss, df_loss_itr, df_score = read_hdf_loss(file)
 
-        fig_all = prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list, df_grid_samples, 
-                                                            df_grad_g_z_list, df_score_info, df_score_info_hist,
-                                                            df_loss_dsc_itr, df_loss_gen_itr, df_loss, df_score,
-                                                            epoch_list, quiver_name, method_type, config)
+    just_loss = True if len(df_sample)==0 else False
+    fig_all = prepare_plotly_fig_quiver_grad(df_sample, df_data,  df_score_info, df_score_info_hist,
+                                            df_loss_itr, df_loss, df_score, epoch_list, quiver_name, 
+                                            method_type, config, just_loss, training)
           
     show_latex_in_plotly()
     return fig_all
@@ -720,8 +648,8 @@ if __name__=='__main__':
     expr_id = 'Regression_ToyRegressionNet_4_64_swissroll'
     expr_id = 'Boosting_T_40_ToyBoosting_4_64_swissroll_t_dim_1_innr_ep_500_gamma_0.025'
     expr_id = 'GAN-RKL_ToyGAN_4_64_swissroll_z_dim_1_lr_dsc_1e-4_lr_gen_1e-4_loss_dsc_stan_lc_0.5_0.5_1_loss_gen_heur_lc_1'
-   
+    expr_id = 'GAN-RKL_GANMNIST_2_16_MNIST_z_dim_8_lr_dsc_1e-4_lr_gen_1e-4_loss_dsc_stan_lc_0.5_0.5_1_loss_gen_heur_lc_1'
     method = expr_id.split('_')[0]
     # fig_sample, fig_loss = plot_animation(method, expr_id, training=True, all_epochs=True, quiver_name='grad')
-    fig_sample = plot_animation(method, expr_id, training=True, epoch_key=5, all_epochs=True, quiver_name='grad')
+    fig_sample = plot_animation(method, expr_id, training=True, quiver_name='grad')
     # fig_sample, fig_loss = plot_animation_regression(method, expr_id, training=False, all_zeros=True)
