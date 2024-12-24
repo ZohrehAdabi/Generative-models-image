@@ -682,7 +682,7 @@ def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list
     return fig
  
 
-def plot_animation(expr_id, training=True, quiver_name='noise', train_name=None, test_name=None):
+def plot_animation(expr_id, training=True, last_epochs=5, quiver_name='noise', train_name=None, test_name=None):
 
     method = expr_id.split('_')[0] 
     dataset_name, config = get_dataset_name(method, expr_id)
@@ -706,9 +706,10 @@ def plot_animation(expr_id, training=True, quiver_name='noise', train_name=None,
         df_loss, df_loss_itr = read_hdf_loss(file)
 
     just_loss = True if len(df_sample)==0 else False
-    fig_all = prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list, 
-                                                            df_grad_or_noise_grid_list, df_grads_or_noises_info, 
-                                                            df_loss_itr, df_loss, epoch_list, timesteps_list, 
+    fig_all = prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list[-last_epochs:], 
+                                                            df_grad_or_noise_grid_list[-last_epochs:], 
+                                                            df_grads_or_noises_info[-last_epochs:], 
+                                                            df_loss_itr, df_loss, epoch_list[-last_epochs:], timesteps_list, 
                                                             quiver_name, method_type, config, just_loss, training)
           
     show_latex_in_plotly()
@@ -729,7 +730,7 @@ if __name__=='__main__':
     # expr_id = 'Regression_ToyRegressionNet_4_64_swissroll'
     # expr_id = 'Boosting_T_40_ToyBoosting_4_64_swissroll_t_dim_1_innr_ep_500_gamma_0.025'
     expr_id = 'DDPM-Hidden_beta_linear_T_40_ToyDDPMHidden_4_64_swissroll_t_dim_1_h_size_2'
-    expr_id = 'DDPM_beta_linear_T_40_UNetMNIST_4_32_MNIST_t_dim_8'
+    expr_id = 'DDPM_beta_linear_T_200_UNetMNIST_2_16_GN_MNIST_t_dim_128'
     method = expr_id.split('_')[0]
-    fig = plot_animation(method, expr_id, training=True)
+    fig = plot_animation(expr_id, training=True)
     # fig_sample, fig_loss = plot_animation_regression(method, expr_id, training=False, all_zeros=True)
