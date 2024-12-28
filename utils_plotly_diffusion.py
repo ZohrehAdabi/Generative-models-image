@@ -118,12 +118,6 @@ def read_hdf_all_epochs_train(file):
         n_sel_time = hdf_file['/df/info']['n_sel_time'].values[0]
 
         df_sample = []
-        df_grads_or_noises_info = pd.DataFrame()
-        # df_grad_or_noise_hist = []
-        # df_grad_g_z = pd.DataFrame()
-        # df_grad_g_z_at_sampling = pd.DataFrame()
-        df_fake_data = pd.DataFrame()
-        # df_intermediate_smpl = pd.DataFrame()
         df_intermediate_smpl_list = []
         df_grad_or_noise_grid_list = []
         df_grad_or_noise_info_hist = []
@@ -135,20 +129,18 @@ def read_hdf_all_epochs_train(file):
                 if 'epoch_' in k:
                     epoch_list.append(int(k.split('/')[2].split('_')[2]))
             elif 'intermediate_smpl'in k:
-                # df_intermediate_smpl = pd.concat([df_intermediate_smpl if not df_intermediate_smpl.empty else None, hdf_file[k]])
-                
+                               
                 intmd_smple = hdf_file[k].iloc[:, 1:].to_numpy().T.reshape(n_sel_time, *image_shape)
                 df_intermediate_smpl_list.append(intmd_smple)
             
-            # elif 'grad_info' in k or 'noise_info' in k:
-            #     df_grads_or_noises_info = pd.concat([df_grads_or_noises_info if not df_grads_or_noises_info.empty else None, hdf_file[k]])
+            
             elif 'grad_info' in k or 'noise_info' in k: # noise or grad predicted for of samples generated iteratively
                 df_grad_or_noise_info_hist.append(hdf_file[k])
         
-            elif 'grad_grid' in k or 'noise_grid' in k:
-                # df_grad_g_z = pd.concat([df_grad_g_z if not df_grad_g_z.empty else None, hdf_file[k]])
-                intmd_gr_ns = hdf_file[k].iloc[:, 1:].to_numpy().T.reshape(n_sel_time, *image_shape)
-                df_grad_or_noise_grid_list.append(intmd_gr_ns)
+            # elif 'grad_grid' in k or 'noise_grid' in k:
+                
+            #     intmd_gr_ns = hdf_file[k].iloc[:, 1:].to_numpy().T.reshape(n_sel_time, *image_shape)
+            #     df_grad_or_noise_grid_list.append(intmd_gr_ns)
             
 
         df_data = hdf_file['/df/data']
@@ -304,7 +296,7 @@ def visibility_buttons_and_idx(n_all_buttons, n_button_animations, n_button_stat
                 back_stats_idx, back_detail_idx, select_dropdown_idx
 
 def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_list, button_info, 
-                                 slider_info, frame_spec, epoch_list, training=False):
+                                 slider_info, frame_spec, epoch_list, all_epoch_list, training=False):
     
     play_button_list = []
     select_button_list = [] #drop down button
@@ -320,7 +312,7 @@ def add_play_show_buttons_slider(trace_visibility, button_visibility, timesteps_
     # slider for zero play button
     
     all_zero_slider = dict(steps=[dict(args=[[f'zero_epoch_{e}'], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate' }], 
-                                method='animate', label=f'{e}' ) for e in epoch_list] )
+                                method='animate', label=f'{e}' ) for e in all_epoch_list] )
     all_zero_slider.update(slider_info)
 
     visibility_layout = {'title': f'All zeros', 'height': 570}
@@ -538,23 +530,24 @@ def add_back_buttons(trace_visibility, n_button_statistics, button_info, slider_
     
 
 def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list, 
-                                    df_grad_or_noise_grid_list, df_grads_or_noises_info, 
-                                    df_loss_itr, df_loss, epoch_list, timesteps_list, 
+                                    df_grads_or_noises_info, 
+                                    df_loss_itr, df_loss, epoch_list, last_epochs, timesteps_list, 
                                     quiver_name, method, config, just_loss=False, training=True, width=750, height=570):
 
     # The traces must be added in the correct order for the button's visibility to function properly
-   
+    all_epoch_list = epoch_list[:]
+    epoch_list = epoch_list[-last_epochs:]
     num_epochs = len(epoch_list)
     colors = dict(sample='#AB63FA', grad='DarkSlateGrey', data='#19D3F3', fake='mediumorchid') # samples-grads-data
     if not just_loss:
         # create frames for each animation [epochs], all zeros samples are in one df: df_sample
-        all_zero_sample_frames = add_all_zeros_animation(df_sample, epoch_list)
+        all_zero_sample_frames = add_all_zeros_animation(df_sample, all_epoch_list)
 
         # add animations of all epochs
         animation_list = add_epochs_animation_slider(df_intermediate_smpl_list, epoch_list, timesteps_list)
 
     fig = go.Figure() 
-
+    
     if not just_loss:
         # data, sample_zero at first epoch , grad at first epoch
         fig = add_sample_trace(fig, all_zero_sample_frames, animation_list, epoch_list)
@@ -603,9 +596,10 @@ def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list
     all_zero_slider = dict()
     if not just_loss:
         # add play buttons, show buttons
-        play_button_list, select_button_list, all_zero_slider = add_play_show_buttons_slider(trace_visibility, button_visibility, 
-                                                                                            timesteps_list, button_info, slider_info, 
-                                                                                            frame_spec, epoch_list, training)
+        play_button_list, select_button_list, all_zero_slider = \
+            add_play_show_buttons_slider(trace_visibility, button_visibility, 
+                                        timesteps_list, button_info, slider_info, 
+                                        frame_spec, epoch_list, all_epoch_list, training)
     
 
     if training:
@@ -673,6 +667,7 @@ def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list
         # plot_bgcolor='rgba(100, 100, 100, 0)',
         margin=dict(l=80, t=60, b=20, r=150),
         showlegend=True,
+        plot_bgcolor='white',
         width=width,
         height=height
     )
@@ -707,9 +702,8 @@ def plot_animation(expr_id, training=True, last_epochs=5, quiver_name='noise', t
 
     just_loss = True if len(df_sample)==0 else False
     fig_all = prepare_plotly_fig_quiver_grad(df_sample, df_data, df_intermediate_smpl_list[-last_epochs:], 
-                                                            df_grad_or_noise_grid_list[-last_epochs:], 
                                                             df_grads_or_noises_info[-last_epochs:], 
-                                                            df_loss_itr, df_loss, epoch_list[-last_epochs:], timesteps_list, 
+                                                            df_loss_itr, df_loss, epoch_list, last_epochs, timesteps_list, 
                                                             quiver_name, method_type, config, just_loss, training)
           
     show_latex_in_plotly()

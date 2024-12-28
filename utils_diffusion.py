@@ -56,26 +56,35 @@ def save_config_json(save_dir, params, expr_id):
     p = Path(save_config)
     p.mkdir(parents=True, exist_ok=True)
     save_config = str(p / f'{expr_id}.json')
-    config_dict = {'save_dir': save_dir,
-                   # 'method': params.method,
-                    'beta_schedule': params.beta_schedule, 
-                    'n_timesteps': params.n_timesteps, 
-                    'model': params.model,
-                    'dataset': params.dataset,
-                    'time_dim': params.time_dim,
-                    'data_dim': params.data_dim,
-                    'batch_size': params.batch_size,
-                    # 'total_size': params.total_size,
-                    'normalize': params.normalize,
-                    'n_epoch': params.n_epoch,
-                    'lr': params.lr,
-                    'seed': params.seed
-                    }
     
+    config_dict = {'save_dir': save_dir,
+                # 'method': params.method,
+                # 'beta_schedule': params.beta_schedule, 
+                'n_timesteps': params.n_timesteps, 
+                'model': params.model,
+                'dataset': params.dataset,
+                'time_dim': params.time_dim,
+                'data_dim': params.data_dim,
+                'batch_size': params.batch_size,
+                # 'total_size': params.total_size,
+                # 'normalize': params.normalize,
+                'n_epoch': params.n_epoch,
+                'lr': params.lr,
+                'seed': params.seed
+                }
+    if params.method == 'DDPM':
+        config_dict['beta_schedule'] = params.beta_schedule
+
     if params.method == 'BoostingOne':
+        config_dict['beta_schedule'] = params.beta_schedule
         config_dict['pred_goal'] =  params.pred_goal
-        config_dict['gamma'] =  params.gamma
+        # config_dict['gamma'] =  params.gamma
+
+    # if params.method in ['GSN']:
+    #     config_dict[''] =  params.
+
     if params.method == 'Boosting':
+        config_dict['beta_schedule'] = params.beta_schedule
         config_dict['learner_inp'] =  params.learner_inp
         config_dict['innr_epoch'] =  params.innr_epoch
         config_dict['grad_type'] =  params.grad_type

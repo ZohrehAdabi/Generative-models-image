@@ -597,6 +597,7 @@ def prepare_plotly_fig_quiver_grad(df_sample, df_data, df_score_info, df_score_i
         # plot_bgcolor='rgba(100, 100, 100, 0)',
         margin=dict(l=80, t=60, b=20, r=150),
         showlegend=True,
+        plot_bgcolor='white',
         width=width,
         height=height
     )

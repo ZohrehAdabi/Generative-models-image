@@ -24,7 +24,7 @@ def parse_args(method='Diffusion', script='sampling'):
      
     parser.add_argument('--train_name'          , default=None, help='add a string as a train name to distinguishes expr results.') 
     
-    if method in ['DDPM', 'DDPM-Hidden', 'FlowMatching', 'Boosting', 'BoostingOne', 'Regression']: 
+    if method in ['DDPM', 'DDPM-Hidden', 'FlowMatching', 'Boosting', 'BoostingOne', 'GSN']: 
         parser.add_argument('--beta_schedule'       , default='linear', help='{linear|quadratic|sigmoid|cosine}')
         parser.add_argument('--n_timesteps'         , default=10, type=int, help='Number of time steps for noise scheduling (sampling)')
         parser.add_argument('--time_dim'            , default=16, type=int, help='Used in setting dimension of out time embedding (sinusoidal positional embedding)')

@@ -169,8 +169,8 @@ class GAN_Model(nn.Module):
         loss_gen_hist = []
         real_score_hist = []
         fake_score_hist = []
-
-        row_df_loss = 0
+        real_score, fake_score = None, None
+        len_dataloader = len(self.dataloader)
         
         epochs = tqdm(range(start_epoch, n_epochs), unit="epoch", mininterval=0, disable=False)
         if params.resume: 
@@ -204,6 +204,10 @@ class GAN_Model(nn.Module):
                     optimizer_gen.step()
 
                 loss_gen_hist_epoch.append(loss_gen.item())
+
+                epochs.set_postfix_str(f"| epoch: [{epoch+1}/{n_epochs}]| itr: [{itr+1:<6}/{len_dataloader}]"+
+                                       f"|Loss D {loss_dsc_hist_epoch[-1]:<6.3f}|Loss G {loss_gen_hist_epoch[-1]:.3f}"+
+                                       f"|D(x) {real_score:<6.3f}|D(G(z)) {fake_score:<6.3f}")
             # save progress
             if True: 
                 with torch.no_grad():  
@@ -253,7 +257,7 @@ class GAN_Model(nn.Module):
                                 hdf_store_loss.append(key=f'df/loss_itr', value=df_loss_score_per_itr, format='t')     
                 
                 if (epoch + 1)% params.save_freq_img == 0 and params.validation:
-                    epochs.set_postfix_str(f"| Validation ... | [{start_epoch+1}/{n_epochs}]| train stats:"+
+                    epochs.set_postfix_str(f"| Validation ... | [{epoch+1}/{n_epochs}]| train stats:"+
                                        f"|Loss D {loss_dsc_hist[-1]:<6.3f}|Loss G {loss_gen_hist[-1]:.3f}"+
                                        f"|D(x) {real_score:<6.3f}|D(G(z)) {fake_score:<6.3f}")
                     self.save_result(epoch, loss_dsc_hist, loss_gen_hist, real_score_hist, fake_score_hist, x_batch.shape[1:], z_dim)

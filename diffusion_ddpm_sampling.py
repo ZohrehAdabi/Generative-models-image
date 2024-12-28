@@ -204,45 +204,7 @@ class DDPM_Sampler(nn.Module):
         x = mu + torch.sqrt(sigma2) * torch.randn_like(x) * int(t>0)
 
         return x, predicted_noise
-
-    def sampling_ddpm_step_deterministic(self, x, t, just_mu):
-
-        """
-        DDPM
-        x_{t} = mu_theta  +  sigma * z
-        z ~ N(0, I)
-        """
-        
-        predicted_noise = self.model(x, t)
-
-        mu = self.compute_mu_theta(x, t, predicted_noise)
-        sigma2 = self.reverse_variance(t)
-        if just_mu:
-            x = mu #+ torch.sqrt(sigma2) * torch.randn_like(x) * int((t>0).all())
-        else:
-            x = mu + torch.sqrt(sigma2) #* torch.randn_like(x) * int((t>0).all())
-
-        return x, predicted_noise
-    
-    def sampling_ddpm_step_t_deterministic(self, x, time, t, just_mu):
-
-        """
-        DDPM
-        x_{t} = mu_theta  +  sigma * z
-        z ~ N(0, I)
-        """
-        
-        predicted_noise = self.model(x, time)
-
-        mu = self.compute_mu_theta(x, time, predicted_noise)
-        sigma2 = self.reverse_variance(time)
-        if just_mu:
-            x = mu #+ torch.sqrt(sigma2) * torch.randn_like(x) * int((t>0).all())
-        else:
-            x = mu + torch.sqrt(sigma2) #* torch.randn_like(x) * int((t>0).all())
-
-        return x, predicted_noise
-       
+ 
     def compute_mu_theta(self, x, t, predicted_noise):
         """
         DDPM  
@@ -335,8 +297,8 @@ def ddpm_sampling(expr_id, n_timestep_smpl=-1, n_sel_time=10, n_samples=36, trai
     params.test_name = test_name
     n_timestep_smpl =  n_timesteps if params.n_timestep_smpl==-1 else params.n_timestep_smpl
 
-    betas = select_beta_schedule(s=params.beta_schedule, n_timesteps=n_timesteps).to(device)
-    model = select_model_diffusion(model_info=params.model, data_dim=params.data_dim, time_dim=params.time_dim, n_timesteps=params.n_timesteps, device=device)
+    betas = select_beta_schedule(s=params.beta_schedule, n_timesteps=n_timestep_smpl).to(device)
+    model = select_model_diffusion(model_info=params.model, data_dim=params.data_dim, time_dim=params.time_dim, n_timesteps=params.n_timestep_smpl, device=device)
     dataloader = select_dataset(dataset_name=dataset_name, batch_size=params.batch_size)
     params.save_dir = f"{params.save_dir}/{dataset_name}"
     dataset_mini = torch.cat([next(iter(dataloader))[0], next(iter(dataloader))[0]])
@@ -355,6 +317,9 @@ def ddpm_sampling(expr_id, n_timestep_smpl=-1, n_sel_time=10, n_samples=36, trai
 if __name__=='__main__':
 
     method = 'DDPM'
+
+    expr_id = 'DDPM_beta_linear_T_100_UNetMNIST_3_32_GN_MNIST_t_dim_128'
+    ddpm_sampling(expr_id, n_timestep_smpl=101)
 
     params = parse_args(method, 'sampling')
     params.method = method
