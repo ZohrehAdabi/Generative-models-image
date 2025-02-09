@@ -1,12 +1,12 @@
 from common_imports_diffusion import *
 
-from gsn_dae_sampling import GSN_Sampler
+from rbm_vae_sampling import RBM_Sampler
 from utils_diffusion import construct_image_grid
 
 import warnings
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
-class GSN_Model(nn.Module):
+class RBM_Model(nn.Module):
 
     def __init__(
             self, 
@@ -15,7 +15,7 @@ class GSN_Model(nn.Module):
             n_timesteps=100, 
             expr_id=None
         ):
-        super(GSN_Model, self).__init__()
+        super(RBM_Model, self).__init__()
 
         self.n_timesteps= n_timesteps
         self.model = model
@@ -23,20 +23,23 @@ class GSN_Model(nn.Module):
         self.expr_id = expr_id
         
 
-    def add_noise(self, x, t=1.0, alpha=1.0):
-        
-        eps_noise = torch.randn_like(x) 
-        x_noisy = alpha * x + eps_noise * t
     
-        return x_noisy
+    def add_noise(self, mu, logvar):
+        
+        # eps = torch.randn_like(mu).to(mu.device)
+        # return mu + eps * std.to(mu.device)
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
     
 
-    def train(self, n_epochs=5, lr=0.001, corruption='noisy_dae', device='cuda'):
+    def train(self, n_epochs=5, lr=0.001, kl_weight=0.5, corruption='noisy_dae', device='cuda'):
 
         self.model.to(device)
         self.model.train()
 
-        loss_fn = nn.MSELoss()
+        loss_mse = nn.MSELoss()
+
         optimizer = optim.Adam(self.model.parameters(), lr=lr)# betas=(0.9, 0.999), weight_decay=1e-4)
 
         len_dataloader = len(self.dataloader)
@@ -69,27 +72,32 @@ class GSN_Model(nn.Module):
                 
                 x_batch = x_batch.to(device)
                 
-                x_recons = x_batch.clone()
-
-                if corruption == 'noisy_dae':
+                # x_recons = x_batch.clone()
+                # with torch.no_grad():
+                #         x_noisy = self.add_noise(x_recons.detach())
+                sample = x_batch
+                # x_logvar = torch.randn_like(x_batch)
+                if allX:
                     losses = torch.zeros(self.n_timesteps)
                     for t in range(self.n_timesteps):
-                        with torch.no_grad():
-                            x_noisy = self.add_noise(x_recons.detach())
-
-                        x_recons = self.model(x_noisy)
-                        losses[t] = loss_fn(x_batch, x_recons)
+                        x_recons, x_logvar, mu, logvar = self.model(sample) 
+                        mse = loss_mse(x_batch, x_recons)
+                        kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                        losses[t] = mse + kl_weight * kld
+                        with torch.no_grad(): # sampling
+                            sample = self.add_noise(x_recons, x_logvar)             
                     loss = losses.mean()
-
-                elif corruption == 'just_dae':
-
-                    with torch.no_grad():
-                            x_noisy = self.add_noise(x_recons.detach())
-                    x_recons = x_noisy
+                    
+                else:
                     for t in range(self.n_timesteps):
-                        x_recons = self.model(x_recons)
-                        
-                    loss = loss_fn(x_batch, x_recons)
+                        with torch.no_grad():
+                            x_recons, x_logvar, mu, logvar = self.model(sample)
+                            sample = self.add_noise(x_recons, x_logvar)
+                    x_recons, x_logvar, mu, logvar = self.model(sample)    
+                    mse = loss_mse(x_batch, x_recons)
+                    kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                    loss = mse + kl_weight * kld
+                    
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -97,7 +105,7 @@ class GSN_Model(nn.Module):
                 optimizer.step()
                     
                 loss_hist_epoch.append(loss.item())
-                epochs.set_postfix_str(f"| epoch [{epoch+1}/{n_epochs}]| itr: [{itr + 1:<3}/{len_dataloader}]| loss {loss_hist_epoch[-1]:<5.3f} | Loss {loss_epoch:<5.3}")
+                epochs.set_postfix_str(f"| epoch [{epoch+1}/{n_epochs}]| itr: [{itr + 1:<3}/{len_dataloader}]| mse {mse.item():<5.3f}, kld {kld.item():<5.3f} | Loss {loss_epoch:<5.3}")
             # save progress
             if True: 
                 
@@ -143,7 +151,7 @@ class GSN_Model(nn.Module):
 
     def save_result(self, epoch, loss_hist, data_dim):
         
-        sampler = GSN_Sampler(model=self.model, n_timestep_smpl=n_timestep_smpl, training=True)
+        sampler = RBM_Sampler(model=self.model, n_timestep_smpl=n_timestep_smpl, training=True)
         samples_zero, intermediate_smpl,  = sampler.sampling(n_samples=params.n_samples, data_dim=data_dim, device=device)
         
         if params.save_fig:
@@ -201,7 +209,7 @@ class GSN_Model(nn.Module):
 
 if __name__=='__main__':
 
-    method = 'GSN'
+    method = 'RBM'
     
     params = parse_args(method, 'train')
     params.method = method
@@ -230,6 +238,8 @@ if __name__=='__main__':
 
     n_epochs = params.n_epoch
     lr = params.lr
+    kl_weight = params.kl_weight
+    allX = params.allX
 
     experiment_info = [
         ['method:', method],
@@ -243,13 +253,16 @@ if __name__=='__main__':
         ['n_timestep_smpl:', n_timestep_smpl],
         ['n_epochs:', n_epochs],
         ['lr:' , lr],
+        ['kl_weight:' , kl_weight],
+        ['allX:' , allX],
         ['seed:', params.seed]
     ]
     experiment_info = tabulate(experiment_info, tablefmt='plain')
     
 
-    expr_id = f'GSN_T_{n_timesteps}_{model_name}_{dataset_name}' 
-
+    expr_id = f'RBM_T_{n_timesteps}_{model_name}_{dataset_name}_kl_weight_{kl_weight}' 
+    if allX:
+        expr_id += '_allX'
     # betas = select_beta_schedule(s=beta_schedule, n_timesteps=n_timesteps).to(device)
     model = select_model_diffusion(model_info=model_name, time_dim=time_dim, n_timesteps=n_timesteps, device=device)
     dataloader = select_dataset(dataset_name=dataset_name, batch_size=batch_size)
@@ -276,8 +289,8 @@ if __name__=='__main__':
 
 
     # torch.set_default_device(device)
-    gsn = GSN_Model(model=model, dataloader=dataloader,  n_timesteps=n_timesteps, expr_id=expr_id)
-    gsn.train(n_epochs=n_epochs, lr=lr, device=device)
+    rbm = RBM_Model(model=model, dataloader=dataloader,  n_timesteps=n_timesteps, expr_id=expr_id)
+    rbm.train(n_epochs=n_epochs, lr=lr, kl_weight=kl_weight, device=device)
 
     save_config_json(save_dir, params, expr_id)
 

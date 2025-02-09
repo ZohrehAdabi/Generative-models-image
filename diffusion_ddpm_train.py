@@ -100,7 +100,7 @@ class DDPM_Model(nn.Module):
                     # print(f'epoch {epoch+1}, loss: {loss.item()}')
                     if params.save_model:
                         
-                        checkpoint = {'epoch': epoch,
+                        checkpoint = {'epoch': epoch+1,
                                     'model_state_dict': self.model.state_dict(),
                                     'optimizer_state_dict': optimizer.state_dict(),
                                     'loss': loss_hist[-1]}
@@ -226,6 +226,8 @@ if __name__=='__main__':
 
     n_epochs = params.n_epoch
     lr = params.lr
+    
+    warm_start = params.warm_start
 
     experiment_info = [
         ['method:', method],
@@ -251,6 +253,19 @@ if __name__=='__main__':
     dataloader = select_dataset(dataset_name=dataset_name, batch_size=batch_size)
     dataset_mini = torch.cat([next(iter(dataloader))[0], next(iter(dataloader))[0]])
 
+    
+    if warm_start:
+        warm_start_info = warm_start.split('_')
+        if 'T' in warm_start:
+            ix = warm_start_info.index('T')
+            warm_n_timesteps = int(warm_start_info[ix+1])
+        warm_expr_id = f'DDPM_beta_{beta_schedule}_T_{warm_n_timesteps}' + \
+                        f'_{model_name}_{dataset_name}_t_dim_{time_dim}'
+        warm_file_exists = os.path.exists(f'{params.save_dir}/saved_models/{warm_expr_id}.pt')
+        if warm_file_exists:
+            expr_checkpoint = torch.load(f'{params.save_dir}/saved_models/{warm_expr_id}.pt', weights_only=False)
+            model.load_state_dict(expr_checkpoint['model_state_dict'], strict=False)
+    # Resume
     resume_file_exists = os.path.exists(f'{params.save_dir}/saved_models/{expr_id}.pt')
     if params.resume and resume_file_exists:
         expr_checkpoint = torch.load(f'{params.save_dir}/saved_models/{expr_id}.pt', weights_only=False)

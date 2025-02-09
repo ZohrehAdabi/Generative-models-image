@@ -71,74 +71,29 @@ class DDPM_Sampler(nn.Module):
         batch_size = params.batch_size
         n_batch = (n_samples//batch_size)+1
         n_smpl = (n_batch) * batch_size
-        samples = torch.empty([n_smpl, 3, 299, 299])
+        samples = np.empty([n_smpl, *data_dim[::-1]])
         self.evaluating = True
+        for b in range(n_batch):
+            sample_zero, _, _, _ = self.sampling(n_samples=batch_size, data_dim=data_dim, params=params, device=device)
+            samples[b*batch_size: (b+1)*batch_size] = sample_zero
+        
         import torchvision.models as models
         import torchvision.transforms as transforms
         from torchvision.transforms.functional import InterpolationMode
-        from torchvision.transforms.functional import resize
-
-        # transform_inception = transforms.Compose([
-        #         transforms.ToPILImage(),  # Tensor to PIL Image
-        #         transforms.Resize((299, 299), interpolation=InterpolationMode.BILINEAR),  # Resize to (299, 299)
-        #         transforms.Grayscale(num_output_channels=3),  # Convert grayscale to RGB
-        #         transforms.ToTensor(),  # Convert back to tensor [0, 1]
-        #         # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
-        #     ])
-        for b in range(n_batch):
-            sample_zero, _, _, _ = self.sampling(n_samples=batch_size, data_dim=data_dim, params=params, device=device)
-            # transformed_smpl = torch.stack([transform_inception(img) for img in sample_zero.permute(0, 3, 1, 2)]).to(device)
-            
-            # Inception transform
-            tensor_sample = torch.from_numpy(sample_zero).permute(0, 3, 1, 2)  # Change shape to (N, C, H, W)
-            # Convert to float and normalize
-            tensor_sample = tensor_sample.float() / 255.0
-            resized_sample = resize(tensor_sample, size=(299, 299), interpolation=InterpolationMode.BILINEAR)
-            # Replicate the grayscale channel 3 times
-            rgb_sample = resized_sample.repeat(1, 3, 1, 1)
-
-            samples[b*batch_size: (b+1)*batch_size] = rgb_sample
-
-
+        inception_weights = models.Inception_V3_Weights.DEFAULT
+        # inception_transforms = model_weights.transforms()
+        inception_model = models.inception_v3(weights=inception_weights)
+        inception_model.fc = nn.Identity()
 
         sample_loader = DataLoader(samples, batch_size=batch_size, shuffle=True, num_workers=1)
         
-        
-        if params.use_torchmetric:
-            from torchmetrics.image.fid import FrechetInceptionDistance
-            #  feature: 64, 192, 768, 2048
-            fid = FrechetInceptionDistance(feature=2048, reset_real_features=False, 
-                                           input_img_size=(3, 299, 299), normalize=True).to(device)
-
-            for b, ((x, _), smpl) in enumerate(zip(real_dataloader, sample_loader)):
-                # x = denormalize(x.cpu().numpy())
-                # transformed_x = torch.stack([transform_inception(img) for img in x]).to(device)
-                # transformed_smpl = torch.stack([transform_inception(img) for img in smpl.permute(0, 3, 1, 2)]).to(device)
-                fid.update(x.to(device), real=True)
-                fid.update(smpl.to(device), real=False)
-            fid_value = fid.compute().cpu().numpy()
-
-            # Inception Score
-            from torchmetrics.image.inception import InceptionScore
-            # 'logits_unbiased', 64, 192, 768, 2048
-            inception = InceptionScore(feature='logits_unbiased', splits=10, normalize=True).to(device)
-            # generate some images
-            # imgs = torch.randint(0, 255, (100, 3, 299, 299), dtype=torch.uint8)
-            inception.update(samples.to(device))
-            is_value_mean, is_value_std = inception.compute()
-            is_value_mean, is_value_std = is_value_mean.cpu().numpy(), is_value_std.cpu().numpy()
-        else: 
-                    
-            inception_weights = models.Inception_V3_Weights.DEFAULT
-            # inception_transforms = model_weights.transforms()
-            inception_model = models.inception_v3(weights=inception_weights)
-            inception_model.fc = nn.Identity()
+        if not params.use_torchmetric:
             transform_inception = transforms.Compose([
                 transforms.ToPILImage(),  # Tensor to PIL Image
                 transforms.Resize((299, 299), interpolation=InterpolationMode.BILINEAR),  # Resize to (299, 299)
                 transforms.Grayscale(num_output_channels=3),  # Convert grayscale to RGB
                 transforms.ToTensor(),  # Convert back to tensor [0, 1]
-                # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
             ])
             inception_model.to(device)
             inception_model.eval()
@@ -150,7 +105,29 @@ class DDPM_Sampler(nn.Module):
                 ftur = inception_model(transformed_x).cpu().numpy()
                 features[i*batch_size : (i+1)*batch_size , :] = ftur
 
-        return is_value_mean, is_value_std, fid_value
+        else:
+            from torchmetrics.image.fid import FrechetInceptionDistance
+            fid = FrechetInceptionDistance(feature=64, reset_real_features=False, 
+                                           input_img_size=(3, 299, 299), normalize=True).to(device)
+            # generate two slightly overlapping image intensity distributions
+            # imgs_dist1 = torch.randint(0, 200, (100, 3, 299, 299), dtype=torch.uint8)
+            # imgs_dist2 = torch.randint(100, 255, (100, 3, 299, 299), dtype=torch.uint8)
+            transform_inception = transforms.Compose([
+                transforms.ToPILImage(),  # Tensor to PIL Image
+                transforms.Resize((299, 299), interpolation=InterpolationMode.BILINEAR),  # Resize to (299, 299)
+                transforms.Grayscale(num_output_channels=3),  # Convert grayscale to RGB
+                transforms.ToTensor(),  # Convert back to tensor [0, 1]
+                # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+            ])
+            for b, ((x, _), smpl) in enumerate(zip(real_dataloader, sample_loader)):
+                x = denormalize(x.cpu().numpy())
+                transformed_x = torch.stack([transform_inception(img) for img in x]).to(device)
+                transformed_smpl = torch.stack([transform_inception(img) for img in smpl.permute(0, 3, 1, 2)]).to(device)
+                fid.update(transformed_x, real=True)
+                fid.update(transformed_smpl, real=False)
+            fid_value = fid.compute().cpu().numpy()
+
+        return fid_value
 
     def samplinga_by_selected_model_t(self, sample_t=None, selected_t=0, n_timestep_smpl=40, 
                                       n_samples=5, data_dim=2, normalize=False, scaler=None, params=None, device='cuda'):
@@ -331,10 +308,8 @@ def ddpm_sampling(expr_id, n_timestep_smpl=-1, n_sel_time=10, n_samples=36, eval
     print(f'\n {expr_id}\n')
     ddpm.sampling(n_samples=n_samples, data_dim=x_batch.shape[1:], params=params, device=device)
     if evaluate:
-        dataloader = select_dataset(dataset_name=dataset_name, batch_size=params.batch_size, evaluate=evaluate)
-        is_value_mean, is_value_std, fid_value = ddpm.evaluation(n_samples=n_samples, real_dataloader=dataloader, data_dim=x_batch.shape[1:], 
+        fid_value = ddpm.evaluation(n_samples=n_samples, real_dataloader=dataloader, data_dim=x_batch.shape[1:], 
                         params=params, device=device)
-        print(f'is: mu {is_value_mean} std {is_value_std}\n fid {fid_value}')
         if params.save_hdf:
             p = Path(save_dir)
             path_save = p / 'saved_hdfs' 
@@ -345,17 +320,16 @@ def ddpm_sampling(expr_id, n_timestep_smpl=-1, n_sel_time=10, n_samples=36, eval
 
             file_sample = str(path_save) +  (f'/{expr_id}_df_sample.h5' if test_name is None else f'/{expr_id}_df_sample_{test_name}.h5')
             
-            dffid = pd.DataFrame({'is_mean': [is_value_mean], 'is_std': [is_value_std], 'fid': [fid_value]}).astype(int)
+            dffid = pd.DataFrame({'fid': [fid_value]}).astype(int)
             with pd.HDFStore(file_sample, 'a') as hdf_store_samples:
                 hdf_store_samples.append(key=f'df/fid', value=dffid, format='t')
 
 
 if __name__=='__main__':
 
-    method = 'DDPM'
+    method = 'DDPM-Unlearning'
 
     # expr_id = 'DDPM_beta_linear_T_100_UNetMNIST_3_32_GN_MNIST_t_dim_128'
-    # expr_id = 'DDPM_beta_linear_T_100_UNetMNIST_3_64_BN_MNIST_t_dim_16'
     # ddpm_sampling(expr_id, n_timestep_smpl=100, evaluate=True)
     
 
@@ -376,6 +350,9 @@ if __name__=='__main__':
     data_dim= params.data_dim
     time_dim= params.time_dim
 
+    unlrn_weight = params.unlrn_weight
+    norm_type = params.norm_type
+
     dataset_name = params.dataset
     n_epochs = params.n_epoch
     n_samples = params.n_samples
@@ -394,6 +371,8 @@ if __name__=='__main__':
         ['n_timestep_smpl:', n_timestep_smpl],
         ['n_epochs:', n_epochs],
         ['lr:' , params.lr],
+        ['unlrn_weight:' , unlrn_weight],
+        ['norm_type:' , norm_type],
         ['n_samples:' , n_samples],
         ['seed:', params.seed]
     ]
@@ -401,7 +380,10 @@ if __name__=='__main__':
     print(f'\n{Fore.MAGENTA}{experiment_info}{Fore.RESET}\n')
     
 
-    expr_id = f'DDPM_beta_{beta_schedule}_T_{n_timesteps}_{model_name}_{dataset_name}_t_dim_{time_dim}'
+    if norm_type: 
+        expr_id = f'DDPM-Unlearning_beta_{beta_schedule}_T_{n_timesteps}_{model_name}_{dataset_name}_t_dim_{time_dim}_norm_type_{norm_type}_unlrn_weight_{unlrn_weight}'
+    else:
+        expr_id = f'DDPM-Unlearning_beta_{beta_schedule}_T_{n_timesteps}_{model_name}_{dataset_name}_t_dim_{time_dim}_unlrn_weight_{unlrn_weight}'
 
         
     betas = select_beta_schedule(s=beta_schedule, n_timesteps=n_timesteps).to(device)

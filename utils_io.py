@@ -24,15 +24,33 @@ def parse_args(method='Diffusion', script='sampling'):
      
     parser.add_argument('--train_name'          , default=None, help='add a string as a train name to distinguishes expr results.') 
     
-    if method in ['DDPM', 'DDPM-Hidden', 'FlowMatching', 'Boosting', 'BoostingOne', 'GSN']: 
+    if method in ['DDPM', 'DDPM-Unlearning', 'DDPM-Hidden', 'GSN', 'RBM', 'RBM-Hidden', 'FlowMatching', 'Boosting', 'BoostingOne']: 
         parser.add_argument('--beta_schedule'       , default='linear', help='{linear|quadratic|sigmoid|cosine}')
         parser.add_argument('--n_timesteps'         , default=10, type=int, help='Number of time steps for noise scheduling (sampling)')
         parser.add_argument('--time_dim'            , default=16, type=int, help='Used in setting dimension of out time embedding (sinusoidal positional embedding)')
         parser.add_argument('--n_timestep_smpl'     , default=-1, type=int, help='Number of time steps for sampling')
         parser.add_argument('--n_sel_time'          , default=10, type=int, help='Number of time selected to plot fewer plot of samples in animation, n_timesteps%n_sel_time==0') 
         parser.add_argument('--grid_size'           , default=8, type=int, help='Grid size for generating and ploting gradient in a grid')
-        parser.add_argument('--hid_inp_size'        , default=2, type=int, help='Add padding as hidden input to the input of Diffusion model.')
-    
+        
+        parser.add_argument('--warm_start'          , default=None, help='Use pretrained weights from a run with same model but different in somethig else')
+
+    if method in ['DDPM-Unlearning']:
+        parser.add_argument('--unlrn_weight'        , default=0.5, type=float, help='Weight for Unlearning loss of DPM')
+        parser.add_argument('--norm_type'           , default=None, help=' [z_score|norm2] Normalization for preventing the model from enlarging eps prediction')
+        parser.add_argument('--std_loss'            , action='store_true', help=' Std loss for preventing the model from enlarging eps prediction')
+        parser.add_argument('--std_weight'          , default=None, type=float, help=' std loss weight for preventing the model from enlarging eps prediction')
+    if method in ['DDPM-Hidden']:
+        parser.add_argument('--hid_inp_size'        , default=2, type=int, help='Add padding as hidden input to the input of Diffusion model.') 
+        
+    if method in ['RBM']:
+        parser.add_argument('--kl_weight'           , default=0.5, type=float, help='Weight for kl loss of VAE')
+        parser.add_argument('--allX'                , action='store_true', help='Use all x in RBM chain in loss')
+    if method in ['RBM-Hidden']:
+        parser.add_argument('--burn_in'             , default=0, type=int, help='burn in for training of GSN')
+        parser.add_argument('--lastX'               , action='store_true', help='Use last x in RBM chain in loss')
+        parser.add_argument('--fixed_enc'           , action='store_true', help='Just train Decoder of GSN.  Use Gaussian for Encoder')
+        parser.add_argument('--noise_start'         , action='store_true', help='Start from rand noise instead of dara in RBM chain')
+        
     if method in ['GAN-RKL', 'GAN-wo-G']: 
         parser.add_argument('--z_dim'               , default=8, type=int, help ='Dimension of z input for generator')
         parser.add_argument('--lr_dsc'              , default=1e-3, type=float, help='Learning rate for encoder or discriminator')

@@ -1,37 +1,54 @@
 from common_imports_diffusion import *
 
-from gsn_dae_sampling import GSN_Sampler
+from diffusion_ddpm_sampling import DDPM_Sampler
+
+from utils_diffusion import denormalize
 from utils_diffusion import construct_image_grid
 
 import warnings
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
-class GSN_Model(nn.Module):
+class DDPM_Model(nn.Module):
 
     def __init__(
             self, 
             model,
             dataloader, 
+            betas=None, 
             n_timesteps=100, 
             expr_id=None
         ):
-        super(GSN_Model, self).__init__()
+        super(DDPM_Model, self).__init__()
 
         self.n_timesteps= n_timesteps
         self.model = model
         self.dataloader = dataloader
         self.expr_id = expr_id
         
-
-    def add_noise(self, x, t=1.0, alpha=1.0):
         
-        eps_noise = torch.randn_like(x) 
-        x_noisy = alpha * x + eps_noise * t
-    
-        return x_noisy
-    
+ 
+        self.betas = betas
+        # Make alphas 
+        self.alphas = torch.cumprod(1 - self.betas, axis=0)
+        self.alphas = torch.clip(self.alphas, 0.0001, 0.9999)
 
-    def train(self, n_epochs=5, lr=0.001, corruption='noisy_dae', device='cuda'):
+        # required for self.add_noise
+        self.sqrt_alphas = torch.sqrt(self.alphas)
+        self.sqrt_one_minus_alphas = torch.sqrt(1 - self.alphas) 
+    
+    def forward_noising_process(self, x, t):
+        """
+        DDPM
+        x_{t} = sqrt(alpha_t) * x_{t-1}  +  sqrt(1- alpha_t) * eps
+        """
+        s_alpha = self.sqrt_alphas[t].reshape(-1, 1).unsqueeze(-1).unsqueeze(-1)
+        s_one_alpha = self.sqrt_one_minus_alphas[t].reshape(-1, 1).unsqueeze(-1).unsqueeze(-1)
+        eps_noise = torch.randn_like(x)
+        x_noisy =  s_alpha * x + s_one_alpha * eps_noise
+
+        return x_noisy, eps_noise
+
+    def train(self, n_epochs=5, lr=0.001, unlrn_weight=0.5, std_weight=10, norm_type='norm2', device='cuda'):
 
         self.model.to(device)
         self.model.train()
@@ -54,53 +71,72 @@ class GSN_Model(nn.Module):
             loss = expr_checkpoint['loss']
 
         loss_hist = []
-        
-        epochs = tqdm(range(start_epoch, n_epochs), unit="epoch", mininterval=0, disable=False)
-
-        if params.resume: epochs.set_postfix_str(f"| epoch: [{start_epoch}/{n_epochs}]| Last Loss {loss:<6.3f}")
-
-        norm_t_noise = 0.025 # beta1
         loss_epoch = 'None'
-
+        epochs = tqdm(range(start_epoch, n_epochs), unit="epoch", mininterval=0, disable=False)
+        if params.resume: epochs.set_postfix_str(f"| epoch: [{start_epoch}/{n_epochs}]| Last Loss {loss:<6.3f}")
+        
         for epoch in epochs:
             loss_hist_epoch = []
             # epochs.set_description(f"Epoch {epoch}")
             for itr, (x_batch, _) in enumerate(self.dataloader):
                 
                 x_batch = x_batch.to(device)
+                eps_noise, predicted_noise, t = self.train_ddpm_step(x_batch)
+                if norm_type == 'norm2':
+                    predicted_noise = predicted_noise / torch.linalg.vector_norm(predicted_noise, ord=2, dim=[2, 3], keepdim=True)
+                elif norm_type == 'z_score':
+                    predicted_noise = (predicted_noise - torch.mean(predicted_noise)) / torch.std(predicted_noise, dim=[1, 2, 3], keepdim=True)
+                loss_data = loss_fn(eps_noise, predicted_noise)
                 
-                x_recons = x_batch.clone()
-
-                if corruption == 'noisy_dae':
-                    losses = torch.zeros(self.n_timesteps)
-                    for t in range(self.n_timesteps):
-                        with torch.no_grad():
-                            x_noisy = self.add_noise(x_recons.detach())
-
-                        x_recons = self.model(x_noisy)
-                        losses[t] = loss_fn(x_batch, x_recons)
-                    loss = losses.mean()
-
-                elif corruption == 'just_dae':
-
-                    with torch.no_grad():
-                            x_noisy = self.add_noise(x_recons.detach())
-                    x_recons = x_noisy
-                    for t in range(self.n_timesteps):
-                        x_recons = self.model(x_recons)
-                        
-                    loss = loss_fn(x_batch, x_recons)
-
+                
+                noise_batch = torch.randn_like(x_batch).to(device)
+                # eps_noise_noise, predicted_noise = self.train_ddpm_unlearning_step(noise_batch)
+                predicted_noise_noise = self.model(noise_batch, t, rvrs_grad=True)
+                if norm_type == 'norm2':
+                    predicted_noise_noise = predicted_noise_noise / torch.linalg.vector_norm(predicted_noise_noise, ord=2, dim=[2, 3], keepdim=True)
+                elif norm_type == 'z_score': # Bad
+                    predicted_noise_noise = (predicted_noise_noise - torch.mean(predicted_noise_noise))/ torch.std(predicted_noise_noise, dim=[1, 2, 3], keepdim=True)
+                elif norm_type == 'std_std':
+                    predicted_noise_noise = predicted_noise_noise / torch.std(predicted_noise_noise, dim=[1, 2, 3], keepdim=True)
+                    predicted_noise_noise = predicted_noise_noise * torch.std(predicted_noise, dim=[1, 2, 3], keepdim=True)
+                
+                loss_noise = loss_fn(eps_noise, predicted_noise_noise)
+                
+                # optimizer.zero_grad()
+                # loss_noise.backward()
+                # nn.utils.clip_grad_norm_(self.parameters(), 1)
+                # optimizer.step()
+                if std_loss:
+                    # loss_var = (predicted_noise_noise.var()- torch.tensor(1.0, device=device)).pow(2)
+                    # loss_var = torch.max(torch.tensor(0.0, device=device), loss_var).mean()
+                    eps = 1e-6  # Small constant to avoid log(0)
+                    variance = predicted_noise_noise.var()
+                    loss_var = torch.log(variance + eps) + torch.log(1 - variance + eps)
+                    
+                    loss = loss_data + unlrn_weight *  loss_noise + std_weight * loss_var
+                else:
+                    loss = loss_data + unlrn_weight *  loss_noise 
                 optimizer.zero_grad()
                 loss.backward()
                 # nn.utils.clip_grad_norm_(self.parameters(), 1)
                 optimizer.step()
-                    
                 loss_hist_epoch.append(loss.item())
-                epochs.set_postfix_str(f"| epoch [{epoch+1}/{n_epochs}]| itr: [{itr + 1:<3}/{len_dataloader}]| loss {loss_hist_epoch[-1]:<5.3f} | Loss {loss_epoch:<5.3}")
+                if std_loss:
+                    epochs.set_postfix_str(f"| epoch [{epoch+1}/{n_epochs}]| itr: [{itr + 1:<3}/{len_dataloader}]"+ \
+                                        f"| loss_d {loss_data.item():<5.3f}, loss_n {loss_noise.item():<5.3f}| loss_v {loss_var:<5.3f}" +\
+                                            f"| loss {loss_hist_epoch[-1]:<5.3f}| Loss {loss_epoch:<5.3}")
+                else:
+                    epochs.set_postfix_str(f"| epoch [{epoch+1}/{n_epochs}]| itr: [{itr + 1:<3}/{len_dataloader}]"+ \
+                                       f"| loss_d {loss_data.item():<5.3f}, loss_n {loss_noise.item():<5.3f}" +\
+                                        f"| loss {loss_hist_epoch[-1]:<5.3f}| Loss {loss_epoch:<5.3}")
+# print('pnn-mu', torch.std(predicted_noise_noise, dim=[1, 2, 3]))
+# print('pn-mu', torch.std(predicted_noise, dim=[1, 2, 3]))
+# print('pnn-std', torch.std(predicted_noise_noise, dim=[1, 2, 3]))
+# print('pn-std', torch.std(predicted_noise, dim=[1, 2, 3]))
+# print('pnn-max', torch.max(predicted_noise_noise.abs()))
+# print('pn-max', torch.max(predicted_noise.abs()))
             # save progress
             if True: 
-                
                 loss_epoch = np.mean(loss_hist_epoch)
                 loss_hist.append(loss_epoch)
                 epochs.set_postfix_str(f"| epoch [{epoch+1}/{n_epochs}]| itr: {epoch*len_dataloader + 1:<6}| Loss {loss_hist[-1]:<6.3f}")
@@ -130,8 +166,8 @@ class GSN_Model(nn.Module):
                             hdf_store_loss.append(key=f'df/loss_itr', value=df_loss_per_itr, format='t') 
                        
 
-                if (epoch + 1)% params.save_freq_img == 0 and params.validation:
-                    epochs.set_postfix_str(f"| Validation ...| [{start_epoch+1}/{n_epochs}]| Loss train {loss_hist[-1]:<6.3f}")
+                if (epoch + 1) % params.save_freq_img == 0 and params.validation:
+                    epochs.set_postfix_str(f"| Validation ...| [{epoch+1}/{n_epochs}]| Loss train {loss_hist[-1]:<6.3f}")
                     self.save_result(epoch, loss_hist, x_batch.shape[1:])
                         
                     self.model.train()
@@ -139,13 +175,34 @@ class GSN_Model(nn.Module):
         epochs.close()  
         print(f'\n{Fore.YELLOW}{np.mean(loss_hist):<6.3f}{Fore.RESET}\n')
 
+    def train_ddpm_step(self, x):
+
+        with torch.no_grad():
+            t = torch.randint(0, self.n_timesteps, size=[len(x), 1]).to(x.device) # [0, T-1]  beta start from t=1 to T
+            # t = torch.randint(0, self.n_timesteps, size=[1]).reshape(x.shape[0], 1).to(x.device)
+            x_noisy, eps_noise = self.forward_noising_process(x, t)
+
+        predicted_noise = self.model(x_noisy, t)
+
+        return eps_noise, predicted_noise, t
+    
+    def train_ddpm_unlearning_step(self, x):
+
+        with torch.no_grad():
+            t = torch.randint(0, self.n_timesteps, size=[len(x), 1]).to(x.device) # [0, T-1]  beta start from t=1 to T
+            # t = torch.randint(0, self.n_timesteps, size=[1]).reshape(x.shape[0], 1).to(x.device)
+            x_noisy, eps_noise = self.forward_noising_process(x, t)
+
+        predicted_noise = self.model(x_noisy, t, rvrs_grad=True)
+
+        return eps_noise, predicted_noise
 
 
     def save_result(self, epoch, loss_hist, data_dim):
         
-        sampler = GSN_Sampler(model=self.model, n_timestep_smpl=n_timestep_smpl, training=True)
-        samples_zero, intermediate_smpl,  = sampler.sampling(n_samples=params.n_samples, data_dim=data_dim, device=device)
-        
+        sampler = DDPM_Sampler(model=self.model, betas=self.betas, n_timestep_smpl=n_timestep_smpl, training=True)
+        samples_zero, intermediate_smpl, noises, noise_norm = sampler.sampling(n_samples=params.n_samples, 
+                                                                                    data_dim=data_dim, device=device)
         if params.save_fig:
             plot_samples(samples_zero, dataset_mini, f'{params.save_dir}/plot_samples_training/{self.expr_id}/{epoch+1}.png')
             plt.figure()
@@ -156,9 +213,7 @@ class GSN_Model(nn.Module):
         
         if params.save_hdf:
             
-            
-            # step = self.n_timesteps // params.n_sel_time
-            # dfs = pd.DataFrame(intermediate_smpl[::step, :, :].reshape(-1, data_dim), columns=['x', 'y'])
+
             intermediate_smpl = select_samples_for_plot(intermediate_smpl, params.n_samples, n_timestep_smpl, params.n_sel_time)
             
             new_data = construct_image_grid(params.n_sel_time, intermediate_smpl)    
@@ -170,7 +225,7 @@ class GSN_Model(nn.Module):
 
             dfims = pd.DataFrame(data) 
 
-            # predicted noises          
+            # predicted noises            
             # noises = select_samples_for_plot(noises, params.n_samples, n_timestep_smpl, params.n_sel_time)
             # new_noise = construct_image_grid(params.n_sel_time, noises)    
             # flat_noise_len = np.prod(new_noise.shape[1:])
@@ -187,13 +242,13 @@ class GSN_Model(nn.Module):
             data_zero[f'data_{0}'] = new_data_zero[0].flatten()
             dfs = pd.DataFrame(data_zero) 
             
-            # dfni = pd.DataFrame({'sample_noise_norm':noise_norm, 'epoch': np.repeat(epoch + 1, noise_norm.shape[0])})
+            dfni = pd.DataFrame({'sample_noise_norm':noise_norm, 'epoch': np.repeat(epoch + 1, noise_norm.shape[0])})
 
             with pd.HDFStore(file_sample, 'a') as hdf_store_samples:
                 hdf_store_samples.append(key=f'df/intermediate_smpl_epoch_{epoch + 1:06}', value=dfims, format='t')
                 hdf_store_samples.append(key=f'df/samples_epoch_{epoch + 1:06}', value=dfs, format='t')
                 # hdf_store_samples.append(key=f'df/noise_grid_epoch_{epoch + 1:06}', value=dfng, format='t')
-                # hdf_store_samples.append(key=f'df/noise_info_epoch_{epoch + 1:06}', value=dfni, format='t')
+                hdf_store_samples.append(key=f'df/noise_info_epoch_{epoch + 1:06}', value=dfni, format='t')
             
                 
             
@@ -201,7 +256,7 @@ class GSN_Model(nn.Module):
 
 if __name__=='__main__':
 
-    method = 'GSN'
+    method = 'DDPM-Unlearning'
     
     params = parse_args(method, 'train')
     params.method = method
@@ -215,13 +270,12 @@ if __name__=='__main__':
  
     
     
-    # beta_schedule = params.beta_schedule
+    beta_schedule = params.beta_schedule
     n_timesteps = params.n_timesteps
 
     model_name = params.model
     data_dim= params.data_dim
     time_dim= params.time_dim
-
 
     dataset_name = params.dataset
     params.normalize = True
@@ -230,10 +284,14 @@ if __name__=='__main__':
 
     n_epochs = params.n_epoch
     lr = params.lr
+    unlrn_weight = params.unlrn_weight
+    norm_type = params.norm_type
+    std_loss = params.std_loss
+    std_weight = params.std_weight
 
     experiment_info = [
         ['method:', method],
-        # ['beta_schedule:', beta_schedule],
+        ['beta_schedule:', beta_schedule],
         ['n_timesteps:', n_timesteps],
         ['model:', model_name],
         ['data_dim:', data_dim],
@@ -243,14 +301,23 @@ if __name__=='__main__':
         ['n_timestep_smpl:', n_timestep_smpl],
         ['n_epochs:', n_epochs],
         ['lr:' , lr],
+        ['unlrn_weight:' , unlrn_weight],
+        ['norm_type:' , norm_type],
+        ['std_loss:' , std_loss],
+        ['std_weight:' , std_weight],
         ['seed:', params.seed]
     ]
     experiment_info = tabulate(experiment_info, tablefmt='plain')
     
 
-    expr_id = f'GSN_T_{n_timesteps}_{model_name}_{dataset_name}' 
+    if norm_type: 
+        expr_id = f'DDPM-Unlearning_beta_{beta_schedule}_T_{n_timesteps}_{model_name}_{dataset_name}_t_dim_{time_dim}_norm_type_{norm_type}_unlrn_weight_{unlrn_weight}'
+    else:
+        expr_id = f'DDPM-Unlearning_beta_{beta_schedule}_T_{n_timesteps}_{model_name}_{dataset_name}_t_dim_{time_dim}_unlrn_weight_{unlrn_weight}'
+    if std_loss:
+        expr_id += f'_std_weight_{std_weight}'
 
-    # betas = select_beta_schedule(s=beta_schedule, n_timesteps=n_timesteps).to(device)
+    betas = select_beta_schedule(s=beta_schedule, n_timesteps=n_timesteps).to(device)
     model = select_model_diffusion(model_info=model_name, time_dim=time_dim, n_timesteps=n_timesteps, device=device)
     dataloader = select_dataset(dataset_name=dataset_name, batch_size=batch_size)
     dataset_mini = torch.cat([next(iter(dataloader))[0], next(iter(dataloader))[0]])
@@ -258,7 +325,7 @@ if __name__=='__main__':
     resume_file_exists = os.path.exists(f'{params.save_dir}/saved_models/{expr_id}.pt')
     if params.resume and resume_file_exists:
         expr_checkpoint = torch.load(f'{params.save_dir}/saved_models/{expr_id}.pt', weights_only=False)
-        model.load_state_dict(expr_checkpoint['model_state_dict'])
+        model.load_state_dict(expr_checkpoint['model_state_dict'], strict=False)
     else:
         save_config_json(save_dir, params, expr_id)
         create_save_dir_training(params.save_dir, expr_id)
@@ -276,8 +343,8 @@ if __name__=='__main__':
 
 
     # torch.set_default_device(device)
-    gsn = GSN_Model(model=model, dataloader=dataloader,  n_timesteps=n_timesteps, expr_id=expr_id)
-    gsn.train(n_epochs=n_epochs, lr=lr, device=device)
+    ddpm = DDPM_Model(model=model, dataloader=dataloader, betas=betas, n_timesteps=n_timesteps, expr_id=expr_id)
+    ddpm.train(n_epochs=n_epochs, lr=lr, unlrn_weight=unlrn_weight, std_weight=std_weight, norm_type=norm_type, device=device)
 
     save_config_json(save_dir, params, expr_id)
 

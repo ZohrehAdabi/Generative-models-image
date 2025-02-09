@@ -60,10 +60,64 @@ def load_data(dataset_name):
 
     return dataset
 
+def load_data_eval(dataset_name):
 
-def select_dataset(dataset_name, batch_size, device='cuda'):
+    from torchvision.transforms.functional import InterpolationMode
 
-    dataset = load_data(dataset_name)
+    
+    if dataset_name == 'MNIST': #std = 0.05
+        transform_inception = transforms.Compose([
+            transforms.Resize((299, 299), interpolation=InterpolationMode.BILINEAR),
+            transforms.Grayscale(num_output_channels=3),  # Convert grayscale to RGB
+            transforms.ToTensor(),  # Converts to tensor and scales pixel values to [0, 1]
+            
+        ])
+        data_root = './dataset'
+        dataset = datasets.MNIST(
+            root=data_root,
+            train=True,  # Use 'train' or 'test'
+            transform=transform_inception,
+            download=True   # Downloads the dataset if not available locally
+        )
+
+    elif dataset_name == 'CIFAR10':
+        
+        transform_inception = transforms.Compose([
+            transforms.Resize((299, 299), interpolation=InterpolationMode.BILINEAR),
+            transforms.ToTensor(),         # Convert image to tensor
+        ])
+        data_root = './dataset'
+        dataset = datasets.CIFAR10(
+            root=data_root,
+            train=True,  # Use 'train' or 'test'
+            transform=transform_inception,
+            download=True   # Downloads the dataset if not available locally
+        )
+
+    elif dataset_name == 'CelebA':
+        
+        transform_inception = transforms.Compose([
+        transforms.Resize((299, 299)),  # Resize images to 128x128
+        # transforms.CenterCrop(64),    # Crop to 64x64
+        transforms.ToTensor(),         # Convert image to tensor
+        
+        ])
+        data_root = './dataset'
+        dataset = datasets.CelebA(
+            root=data_root,
+            split='train',  # Use 'train', 'valid', or 'test'
+            transform=transform_inception,
+            download=True   # Downloads the dataset if not available locally
+        )
+
+    return dataset
+
+def select_dataset(dataset_name, batch_size, evaluate=False, device='cuda'):
+
+    if evaluate:
+        dataset = load_data_eval(dataset_name)
+    else:
+        dataset = load_data(dataset_name)
 
     # dataset = data.to(torch.float).to(device)    
     # Create DataLoader

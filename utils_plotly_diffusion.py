@@ -146,6 +146,10 @@ def read_hdf_all_epochs_train(file):
         df_data = hdf_file['/df/data']
         n_samples = hdf_file['/df/info']['n_samples'].values[0]
         timesteps_list = hdf_file['/df/sampling_timesteps']['time'].to_numpy()
+        df_evaluation = None
+        if 'fid' in keys:
+            df_evaluation = hdf_file['/df/fid']
+            print(df_evaluation)
         hdf_file.close()
     except:
         print(f'Error in reading hdf file {file}')
@@ -158,7 +162,7 @@ def read_hdf_all_epochs_train(file):
         epoch_list = [0]
 
     return df_sample, df_data, df_intermediate_smpl_list, df_grad_or_noise_info_hist, \
-            df_grad_or_noise_grid_list, epoch_list, timesteps_list, n_samples
+            df_grad_or_noise_grid_list, df_evaluation, epoch_list, timesteps_list, n_samples
 
 
 def add_all_zeros_animation(df_sample, epoch_list):
@@ -693,7 +697,7 @@ def plot_animation(expr_id, training=True, last_epochs=5, quiver_name='noise', t
 
     
     df_sample, df_data, df_intermediate_smpl_list, df_grads_or_noises_info, \
-        df_grad_or_noise_grid_list, epoch_list, timesteps_list, n_samples  = read_hdf_all_epochs_train(file)
+        df_grad_or_noise_grid_list, df_evaluation, epoch_list, timesteps_list, n_samples  = read_hdf_all_epochs_train(file)
 
     df_loss, df_loss_itr = None, None
     if training:   
@@ -725,6 +729,7 @@ if __name__=='__main__':
     # expr_id = 'Boosting_T_40_ToyBoosting_4_64_swissroll_t_dim_1_innr_ep_500_gamma_0.025'
     expr_id = 'DDPM-Hidden_beta_linear_T_40_ToyDDPMHidden_4_64_swissroll_t_dim_1_h_size_2'
     expr_id = 'DDPM_beta_linear_T_200_UNetMNIST_2_16_GN_MNIST_t_dim_128'
-    method = expr_id.split('_')[0]
+    expr_id = 'DDPM_beta_linear_T_100_DummyEpsModel_2_32_MNIST_t_dim_8'
+    # method = expr_id.split('_')[0]
     fig = plot_animation(expr_id, training=True)
     # fig_sample, fig_loss = plot_animation_regression(method, expr_id, training=False, all_zeros=True)

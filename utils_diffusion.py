@@ -72,9 +72,27 @@ def save_config_json(save_dir, params, expr_id):
                 'lr': params.lr,
                 'seed': params.seed
                 }
-    if params.method == 'DDPM':
-        config_dict['beta_schedule'] = params.beta_schedule
 
+    if params.method in ['DDPM']:
+        config_dict['beta_schedule'] = params.beta_schedule
+    if params.method in ['DDPM-Unlearning']:
+        config_dict['beta_schedule'] = params.beta_schedule
+        config_dict['unlrn_weight'] = params.unlrn_weight
+        config_dict['norm_type'] = params.norm_type
+        config_dict['std_loss'] = params.std_loss
+        config_dict['std_weight'] = params.std_weight
+    if params.method == 'DDPM-Hidden':
+        config_dict['hid_inp_size'] = params.hid_inp_size
+        config_dict['beta_schedule'] = params.beta_schedule
+    if params.method == 'RBM':
+        config_dict['kl_weight'] = params.kl_weight
+        config_dict['allX'] = params.allX
+    if params.method == 'RBM-Hidden':
+        config_dict['burn_in'] = params.burn_in
+        config_dict['lastX'] = params.lastX    
+        config_dict['fixed_enc'] = params.fixed_enc    
+        config_dict['noise_start'] = params.noise_start  
+        
     if params.method == 'BoostingOne':
         config_dict['beta_schedule'] = params.beta_schedule
         config_dict['pred_goal'] =  params.pred_goal

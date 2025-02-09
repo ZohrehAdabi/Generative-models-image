@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 import itertools
 import torch.nn.functional as F
-
+from pytorch_revgrad import RevGrad
 
 """
 Diffusion
@@ -541,6 +541,9 @@ class BasicUNetMNIST(nn.Module):
         return x  
 
 
+
+
+
 def conv_block(in_channels, out_channels, num_groups=8, dropout=False, ks=7, pd=3, cbt='simple'):    
     
     if cbt=='simple':
@@ -572,6 +575,17 @@ def conv_block(in_channels, out_channels, num_groups=8, dropout=False, ks=7, pd=
             nn.GroupNorm(num_groups, out_channels),
             nn.GELU()
         )
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, num_groups=8, dropout=False, ks=7, pd=3, cbt='simple'):
+        super().__init__()
+        self.conv_block = conv_block(in_channels, out_channels, num_groups, dropout, ks, pd, cbt)
+        self.residual = nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0)
+
+    def forward(self, x):
+        residual = self.residual(x)  # residual connection
+        x = self.conv_block(x)
+        return x + residual
 
 class BoostingOneUNetMNIST(nn.Module):
     def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
@@ -729,6 +743,585 @@ class DAEMNIST(nn.Module):
 
         return self.out(x)
  
+class VAEMNISTED(nn.Module): # encoder decoder, with out skip connection
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
+                 down=True, up=True, ks=7, pd=3, conv_block_type='simple', final_act=False, device='cuda'):
+        super().__init__()
+        
+        # Time Embedding
+        # self.time_embedding = nn.Embedding(1000, time_emb_dim)
+        if time_emb_dim == 1:
+            self.time_pos_enc = nn.Identity()
+        else:
+            self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
+        # layers_num = np.arange(0, depth)
+        # hidden_channels =  [in_channels] + [base_channel*2**i for i in layers_num]
+        # Encoder
+        self.encoder = nn.ModuleList()
+        self.downsample = nn.ModuleList()
+        # in_channels += time_emb_dim
+        for i in range(depth):
+            self.encoder.append(conv_block(in_channels, base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+            if down: self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks+1, stride=2, padding=pd))
+            else:  # donot change size of image
+                self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks, stride=1, padding=pd))
+            in_channels = base_channel * 2 ** i
+
+            # self.downsample.append(nn.MaxPool2d(2))
+        
+        # Bottleneck
+        self.bottleneck_mean_z = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        self.bottleneck_var_z = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        # Decoder
+        self.decoder = nn.ModuleList()
+        self.upsample = nn.ModuleList()
+        for i in range(depth - 1, -1, -1):
+
+            # self.upsample.append(nn.Upsample(scale_factor=2, mode = 'bilinear', align_corners=False))
+            if up:
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** (i+1), 
+                                                    kernel_size=ks+1, stride=2, padding=pd))
+            else: # donot change size of image
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** (i+1), 
+                                                    kernel_size=ks, stride=1, padding=pd))
+            self.decoder.append(conv_block(base_channel * 2 ** (i + 1), base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+
+
+        if final_act:
+            self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd), nn.Tanh())
+        else: 
+            self.out_mean = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+            self.out_var = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+
+
+    def reparameterize(self, mu, logvar):
+
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x, t=None):
+        
+        
+        # t_emb = self.time_pos_enc(t) 
+        #                     # [B, time_emb_dim, 1, 1]  # Expand to match spatial dimensions
+        # t_emb = t_emb.view(-1, t_emb.shape[1], 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
+        
+        # # Add time embedding to input
+        # x = torch.cat((x, t_emb), dim=1)
+
+        encoder_outputs = []
+        for enc, down in zip(self.encoder, self.downsample):
+            x = enc(x)
+            encoder_outputs.append(x)
+            x = down(x)
+            
+        mu = self.bottleneck_mean_z(x)
+        logvar = self.bottleneck_var_z(x)
+
+        x = self.reparameterize(mu, logvar)
+
+        for up, dec in zip(self.upsample, self.decoder):
+
+            skip_connection = encoder_outputs.pop()
+            x = up(x)
+            # x = torch.cat((x, skip_connection), dim=1)
+            x = dec(x)   
+
+        out_mu = self.out_mean(x)
+        out_logvar = self.out_var(x)
+
+        return out_mu, out_logvar, mu, logvar
+    
+class EncoderMNIST(nn.Module): # # AE for encoding h|x,h, with out skip connection
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
+                 down=True, up=True, ks=7, pd=3, conv_block_type='simple', final_act=False, device='cuda'):
+        super().__init__()
+        
+        # Time Embedding
+        # self.time_embedding = nn.Embedding(1000, time_emb_dim)
+        if time_emb_dim == 1:
+            self.time_pos_enc = nn.Identity()
+        else:
+            self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
+        # layers_num = np.arange(0, depth)
+        # hidden_channels =  [in_channels] + [base_channel*2**i for i in layers_num]
+        # Encoder
+        self.encoder = nn.ModuleList()
+        self.downsample = nn.ModuleList()
+        # in_channels += time_emb_dim
+        for i in range(depth):
+            self.encoder.append(conv_block(in_channels, base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+            if down: self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks+1, stride=2, padding=pd))
+            else:  # donot change size of image
+                self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks, stride=1, padding=pd))
+            in_channels = base_channel * 2 ** i
+
+            # self.downsample.append(nn.MaxPool2d(2))
+        
+        # Bottleneck
+        self.bottleneck_mean_z = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        self.bottleneck_var_z = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        # Decoder
+        self.decoder = nn.ModuleList()
+        self.upsample = nn.ModuleList()
+        for i in range(depth - 1, -1, -1):
+
+            # self.upsample.append(nn.Upsample(scale_factor=2, mode = 'bilinear', align_corners=False))
+            if up:
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** (i+1), 
+                                                    kernel_size=ks+1, stride=2, padding=pd))
+            else: # donot change size of image
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** (i+1), 
+                                                    kernel_size=ks, stride=1, padding=pd))
+            self.decoder.append(conv_block(base_channel * 2 ** (i + 1), base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+
+
+        if final_act:
+            self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd), nn.Tanh())
+        else: 
+            self.out_mean = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+            self.out_var = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+
+
+    def reparameterize(self, mu, logvar):
+
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, xh, t=None):
+        
+        # t_emb = self.time_pos_enc(t) 
+        #                     # [B, time_emb_dim, 1, 1]  # Expand to match spatial dimensions
+        # t_emb = t_emb.view(-1, t_emb.shape[1], 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
+        
+        # # Add time embedding to input
+        # x = torch.cat((x, t_emb), dim=1)
+        
+
+        x = xh
+        encoder_outputs = []
+        for enc, down in zip(self.encoder, self.downsample):
+            x = enc(x)
+            # encoder_outputs.append(x)
+            x = down(x)
+               
+        x = self.bottleneck_mean_z(x)
+        # logvar = self.bottleneck_var_z(x)
+
+        # x = self.reparameterize(mu, logvar)
+        # z = x.clone()
+        for up, dec in zip(self.upsample, self.decoder):
+
+            # skip_connection = encoder_outputs.pop()
+            x = up(x)
+            # x = torch.cat((x, skip_connection), dim=1)
+            x = dec(x)   
+
+        out_mu = self.out_mean(x)
+        out_logvar = self.out_var(x)
+
+        return out_mu, out_logvar
+    
+class DecoderMNIST(nn.Module): # AE for decoding x|h, with out skip connection
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
+                 down=True, up=True, ks=7, pd=3, conv_block_type='simple', final_act=False, device='cuda'):
+        super().__init__()
+        
+        # Time Embedding
+        # self.time_embedding = nn.Embedding(1000, time_emb_dim)
+        if time_emb_dim == 1:
+            self.time_pos_enc = nn.Identity()
+        else:
+            self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
+        # layers_num = np.arange(0, depth)
+        # hidden_channels =  [in_channels] + [base_channel*2**i for i in layers_num]
+        # Encoder
+        self.encoder = nn.ModuleList()
+        self.downsample = nn.ModuleList()
+        # in_channels += time_emb_dim
+        for i in range(depth):
+            self.encoder.append(conv_block(in_channels, base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+            if down: self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks+1, stride=2, padding=pd))
+            else:  # donot change size of image
+                self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks, stride=1, padding=pd))
+            in_channels = base_channel * 2 ** i
+
+            # self.downsample.append(nn.MaxPool2d(2))
+        
+        # Bottleneck
+        self.bottleneck_mean_z = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        self.bottleneck_var_z = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        # Decoder
+        self.decoder = nn.ModuleList()
+        self.upsample = nn.ModuleList()
+        for i in range(depth - 1, -1, -1):
+
+            # self.upsample.append(nn.Upsample(scale_factor=2, mode = 'bilinear', align_corners=False))
+            if up:
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** (i+1), 
+                                                    kernel_size=ks+1, stride=2, padding=pd))
+            else: # donot change size of image
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** (i+1), 
+                                                    kernel_size=ks, stride=1, padding=pd))
+            self.decoder.append(conv_block(base_channel * 2 ** (i + 1), base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+
+
+        if final_act:
+            self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd), nn.Tanh())
+        else: 
+            self.out_mean = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+            self.out_var = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+
+
+    def reparameterize(self, mu, logvar):
+        # torch.isnan(std).any() or torch.isinf(std).any() or torch.isnan(mu).any() or torch.isinf(mu).any()
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, h, t=None):
+        
+        
+        encoder_outputs = []
+        for enc, down in zip(self.encoder, self.downsample):
+            h = enc(h)
+           # encoder_outputs.append(x)
+            h = down(h)
+            
+        h = self.bottleneck_mean_z(h)
+        # logvar = self.bottleneck_var_z(h)
+
+        # h = self.reparameterize(mu, logvar)
+
+        for up, dec in zip(self.upsample, self.decoder):
+
+            # skip_connection = encoder_outputs.pop()
+            h = up(h)
+            # x = torch.cat((x, skip_connection), dim=1)
+            h = dec(h)   
+
+        out_mu = self.out_mean(h)
+        out_logvar = self.out_var(h)
+
+        return out_mu, out_logvar
+    
+class GSNUNetMNIST(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
+                 down=True, up=True, ks=7, pd=3, conv_block_type='simple', final_act=False, device='cuda'):
+        super().__init__()
+        
+        # Time Embedding
+        # self.time_embedding = nn.Embedding(1000, time_emb_dim)
+        if time_emb_dim == 1:
+            self.time_pos_enc = nn.Identity()
+        else:
+            self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
+        # layers_num = np.arange(0, depth)
+        # hidden_channels =  [in_channels] + [base_channel*2**i for i in layers_num]
+        # Encoder
+        self.encoder = nn.ModuleList()
+        self.downsample = nn.ModuleList()
+        # in_channels += time_emb_dim
+        for i in range(depth):
+            self.encoder.append(conv_block(in_channels, base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+            if down: self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks+1, stride=2, padding=pd))
+            else:  # donot change size of image
+                self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks, stride=1, padding=pd))
+            in_channels = base_channel * 2 ** i
+
+            # self.downsample.append(nn.MaxPool2d(2))
+        
+        # Bottleneck
+        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        # Decoder
+        self.decoder = nn.ModuleList()
+        self.upsample = nn.ModuleList()
+        for i in range(depth - 1, -1, -1):
+
+            # self.upsample.append(nn.Upsample(scale_factor=2, mode = 'bilinear', align_corners=False))
+            if up:
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** i, 
+                                                    kernel_size=ks+1, stride=2, padding=pd))
+            else: # donot change size of image
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** i, 
+                                                    kernel_size=ks, stride=1, padding=pd))
+            self.decoder.append(conv_block(base_channel * 2 ** (i + 1), base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+
+
+        if final_act:
+            self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd), nn.Tanh())
+        else: 
+            self.out_mean = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+            self.out_var = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+
+        
+
+    def forward(self, x, t=None):
+
+        # t_emb = self.time_pos_enc(t) 
+        #                     # [B, time_emb_dim, 1, 1]  # Expand to match spatial dimensions
+        # t_emb = t_emb.view(-1, t_emb.shape[1], 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
+        
+        # # Add time embedding to input
+        # x = torch.cat((x, t_emb), dim=1)
+
+        encoder_outputs = []
+        for enc, down in zip(self.encoder, self.downsample):
+            x = enc(x)
+            encoder_outputs.append(x)
+            x = down(x)
+            
+        x = self.bottleneck(x)
+
+        for up, dec in zip(self.upsample, self.decoder):
+
+            skip_connection = encoder_outputs.pop()
+            x = up(x)
+            x = torch.cat((x, skip_connection), dim=1)
+            x = dec(x)   
+
+        out_mu = self.out_mean(x)
+        out_logvar = self.out_var(x)
+
+        return out_mu, out_logvar
+
+
+class VAEHiddenMNISTED(nn.Module): # encoder decoder, with out skip connection
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
+                 down=True, up=True, ks=7, pd=3, conv_block_type='simple', final_act=False, device='cuda'):
+        super().__init__()
+        
+        # Time Embedding
+
+        #*********************************************************************************
+        # AE for encoding h|x,h
+        self.encoder = EncoderMNIST(2, out_channels, base_channel, depth, time_emb_dim, 
+                 down, up, ks, pd, conv_block_type, final_act, device)
+        #***************************************************************************
+        # AE for decoding x|h
+        self.decoder = DecoderMNIST(in_channels, out_channels, base_channel, depth, time_emb_dim, 
+                 down, up, ks, pd, conv_block_type, final_act, device)
+
+
+    def reparameterize(self, mu, logvar):
+
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x, h, burn_in=False, n_burn_in=0, fixed_encoder=False, t=None):
+        
+        if fixed_encoder:
+            if burn_in:
+                x0 = x.clone()
+                for i in range(n_burn_in):
+                    
+                    x = x0 + h 
+                    eps = torch.randn_like(x)
+                    h = x + eps
+                h = x0 + h
+
+            else:
+                eps = torch.randn_like(x)
+                h = x + h + eps
+                
+        else:
+            if burn_in:
+                x0 = x.clone()
+                for i in range(n_burn_in):
+                    
+                    # x = x0 + h
+                    x = torch.cat((x0, h), dim=1)
+                    h_mu, h_logvar = self.encoder(x)
+                    h = self.reparameterize(h_mu, h_logvar)
+                # x = x0 + h
+                x = torch.cat((x0, h), dim=1)
+
+            else:
+                # x = x + h
+                x = torch.cat((x, h), dim=1)
+
+            h_mu, h_logvar = self.encoder(x)
+            h = self.reparameterize(h_mu, h_logvar)
+
+        out_mu, out_logvar = self.decoder(h)
+
+        return out_mu, out_logvar, h
+   
+class VAEHiddenUnetMNISTED(nn.Module): # encoder decoder, with out skip connection
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
+                 down=True, up=True, ks=7, pd=3, conv_block_type='simple', final_act=False, device='cuda'):
+        super().__init__()
+        
+        # Time Embedding
+
+        #*********************************************************************************
+        # AE for encoding h|x,h
+        self.encoder = GSNUNetMNIST(2, out_channels, base_channel, depth, time_emb_dim, 
+                 down, up, ks, pd, conv_block_type, final_act, device)
+        #***************************************************************************
+        # AE for decoding x|h
+        self.decoder = GSNUNetMNIST(in_channels, out_channels, base_channel, depth, time_emb_dim, 
+                 down, up, ks, pd, conv_block_type, final_act, device)
+
+
+    def reparameterize(self, mu, logvar):
+
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x, h, burn_in=False, n_burn_in=0, fixed_encoder=False, t=None):
+        
+        if fixed_encoder:
+            if burn_in:
+                x0 = x.clone()
+                for i in range(n_burn_in):
+                    
+                    x = x0 + h 
+                    eps = torch.randn_like(x)
+                    h = x + eps
+                h = x0 + h
+
+            else:
+                eps = torch.randn_like(x)
+                h = x + h + eps
+                
+        else:
+            if burn_in:
+                x0 = x.clone()
+                for i in range(n_burn_in):
+                    
+                    # x = x0 + h
+                    x = torch.cat((x0, h), dim=1)
+                    h_mu, h_logvar = self.encoder(x)
+                    h = self.reparameterize(h_mu, h_logvar)
+                # x = x0 + h
+                x = torch.cat((x0, h), dim=1)
+
+            else:
+                # x = x + h
+                x = torch.cat((x, h), dim=1)
+
+            h_mu, h_logvar = self.encoder(x)
+            h = self.reparameterize(h_mu, h_logvar)
+
+        out_mu, out_logvar = self.decoder(h)
+
+        return out_mu, out_logvar, h.detach()
+ 
+
+class VAEMNIST(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
+                 down=True, up=True, ks=7, pd=3, conv_block_type='simple', final_act=False, device='cuda'):
+        super().__init__()
+        
+        # Time Embedding
+        # self.time_embedding = nn.Embedding(1000, time_emb_dim)
+        if time_emb_dim == 1:
+            self.time_pos_enc = nn.Identity()
+        else:
+            self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
+        # layers_num = np.arange(0, depth)
+        # hidden_channels =  [in_channels] + [base_channel*2**i for i in layers_num]
+        # Encoder
+        self.encoder = nn.ModuleList()
+        self.downsample = nn.ModuleList()
+        # in_channels += time_emb_dim
+        for i in range(depth):
+            self.encoder.append(conv_block(in_channels, base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+            if down: self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks+1, stride=2, padding=pd))
+            else:  # donot change size of image
+                self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks, stride=1, padding=pd))
+            in_channels = base_channel * 2 ** i
+
+            # self.downsample.append(nn.MaxPool2d(2))
+        
+        # Bottleneck
+        self.bottleneck_mean_z = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        self.bottleneck_var_z = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        # Decoder
+        self.decoder = nn.ModuleList()
+        self.upsample = nn.ModuleList()
+        for i in range(depth - 1, -1, -1):
+
+            # self.upsample.append(nn.Upsample(scale_factor=2, mode = 'bilinear', align_corners=False))
+            if up:
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** i, 
+                                                    kernel_size=ks+1, stride=2, padding=pd))
+            else: # donot change size of image
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** i, 
+                                                    kernel_size=ks, stride=1, padding=pd))
+            self.decoder.append(conv_block(base_channel * 2 ** (i + 1), base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+
+
+        if final_act:
+            self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd), nn.Tanh())
+        else: 
+            self.out_mean = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+            self.out_var = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+
+
+    def reparameterize(self, mu, logvar):
+
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x, t=None):
+        
+        
+        # t_emb = self.time_pos_enc(t) 
+        #                     # [B, time_emb_dim, 1, 1]  # Expand to match spatial dimensions
+        # t_emb = t_emb.view(-1, t_emb.shape[1], 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
+        
+        # # Add time embedding to input
+        # x = torch.cat((x, t_emb), dim=1)
+
+        encoder_outputs = []
+        for enc, down in zip(self.encoder, self.downsample):
+            x = enc(x)
+            encoder_outputs.append(x)
+            x = down(x)
+            
+        mu = self.bottleneck_mean_z(x)
+        logvar = self.bottleneck_var_z(x)
+
+        x = self.reparameterize(mu, logvar)
+
+        for up, dec in zip(self.upsample, self.decoder):
+
+            skip_connection = encoder_outputs.pop()
+            x = up(x)
+            x = torch.cat((x, skip_connection), dim=1)
+            x = dec(x)   
+
+        out_mu = self.out_mean(x)
+        out_logvar = self.out_var(x)
+
+        return out_mu, out_logvar, mu, logvar
+    
 
 class UNetMNIST(nn.Module):
     def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
@@ -781,7 +1374,9 @@ class UNetMNIST(nn.Module):
         else: 
             self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
 
-    def forward(self, x, t):
+        self.reverse_grad = RevGrad()
+
+    def forward(self, x, t, rvrs_grad=False):
 
         t_emb = self.time_pos_enc(t) 
                             # [B, time_emb_dim, 1, 1]  # Expand to match spatial dimensions
@@ -803,9 +1398,98 @@ class UNetMNIST(nn.Module):
             skip_connection = encoder_outputs.pop()
             x = up(x)
             x = torch.cat((x, skip_connection), dim=1)
-            x = dec(x)          
+            x = dec(x)   
 
-        return self.out(x)
+        out = self.out(x)
+
+        if rvrs_grad:
+            return self.reverse_grad(out)
+        else: return out
+
+
+class ResUNetMNIST(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, base_channel=16, depth=2, time_emb_dim=16, 
+                 down=True, up=True, ks=7, pd=3, conv_block_type='simple', final_act=False, device='cuda'):
+        super().__init__()
+        
+        # Time Embedding
+        # self.time_embedding = nn.Embedding(1000, time_emb_dim)
+        if time_emb_dim == 1:
+            self.time_pos_enc = nn.Identity()
+        else:
+            self.time_pos_enc = SinusoidalPositionalEncoding(time_emb_dim)
+        # layers_num = np.arange(0, depth)
+        # hidden_channels =  [in_channels] + [base_channel*2**i for i in layers_num]
+        # Encoder
+        self.encoder = nn.ModuleList()
+        self.downsample = nn.ModuleList()
+        in_channels += time_emb_dim
+        for i in range(depth):
+            self.encoder.append(ResidualBlock(in_channels, base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+            if down: self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks+1, stride=2, padding=pd))
+            else:  # donot change size of image
+                self.downsample.append(nn.Conv2d(base_channel * 2 ** i, base_channel * 2 ** i, 
+                                             kernel_size=ks, stride=1, padding=pd))
+            in_channels = base_channel * 2 ** i
+
+            # self.downsample.append(nn.MaxPool2d(2))
+        
+        # Bottleneck
+        self.bottleneck = nn.Sequential(nn.Conv2d(base_channel*2**(depth-1), base_channel*2**(depth), 
+                                                  kernel_size=ks, padding=pd), nn.LeakyReLU(inplace=True))
+        # Decoder
+        self.decoder = nn.ModuleList()
+        self.upsample = nn.ModuleList()
+        for i in range(depth - 1, -1, -1):
+
+            # self.upsample.append(nn.Upsample(scale_factor=2, mode = 'bilinear', align_corners=False))
+            if up:
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** i, 
+                                                    kernel_size=ks+1, stride=2, padding=pd))
+            else: # donot change size of image
+                self.upsample.append(nn.ConvTranspose2d(base_channel * 2 ** (i + 1), base_channel * 2 ** i, 
+                                                    kernel_size=ks, stride=1, padding=pd))
+            self.decoder.append(ResidualBlock(base_channel * 2 ** (i + 1), base_channel * 2 ** i, ks=ks, pd=pd, cbt=conv_block_type))
+
+
+        if final_act:
+            self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd), nn.Tanh())
+        else: 
+            self.out = nn.Sequential(nn.Conv2d(in_channels=base_channel, out_channels=out_channels, kernel_size=ks, padding=pd))
+
+        self.reverse_grad = RevGrad()
+
+    def forward(self, x, t, rvrs_grad=False):
+
+        t_emb = self.time_pos_enc(t) 
+                            # [B, time_emb_dim, 1, 1]  # Expand to match spatial dimensions
+        t_emb = t_emb.view(-1, t_emb.shape[1], 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
+        
+        # Add time embedding to input
+        x = torch.cat((x, t_emb), dim=1)
+
+        encoder_outputs = []
+        for enc, down in zip(self.encoder, self.downsample):
+            x = enc(x)
+            encoder_outputs.append(x)
+            x = down(x)
+            
+        x = self.bottleneck(x)
+
+        for up, dec in zip(self.upsample, self.decoder):
+
+            skip_connection = encoder_outputs.pop()
+            x = up(x)
+            x = torch.cat((x, skip_connection), dim=1)
+            x = dec(x)   
+
+        out = self.out(x)
+
+        if rvrs_grad:
+            return self.reverse_grad(out)
+        else: return out
+
 
 
 blk = lambda ic, oc: nn.Sequential(
@@ -1019,12 +1703,27 @@ def select_model_diffusion(model_info, time_dim, n_timesteps, data_dim=None,devi
     elif model_name=='DAEMNIST':
         return DAEMNIST(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, 
                                     down=down, up=up, ks=ks, pd=pd, conv_block_type=conv_block_type, final_act=final_act, device=device)
+    elif model_name=='VAEMNIST':
+        return VAEMNIST(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, 
+                                    down=down, up=up, ks=ks, pd=pd, conv_block_type=conv_block_type, final_act=final_act, device=device) 
+    elif model_name=='VAEHiddenMNISTED':
+        return VAEHiddenMNISTED(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, 
+                                    down=down, up=up, ks=ks, pd=pd, conv_block_type=conv_block_type, final_act=final_act, device=device) 
+    elif model_name=='VAEHiddenUnetMNISTED':
+        return VAEHiddenUnetMNISTED(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, 
+                                    down=down, up=up, ks=ks, pd=pd, conv_block_type=conv_block_type, final_act=final_act, device=device) 
+    elif model_name=='VAEMNISTED':
+        return VAEMNISTED(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, 
+                                    down=down, up=up, ks=ks, pd=pd, conv_block_type=conv_block_type, final_act=final_act, device=device)    
     elif model_name=='BasicUNetMNIST':
         return BasicUNetMNIST(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, time_emb_dim=time_dim, device=device)
     elif model_name=='DummyEpsModel':
         return DummyEpsModel(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, time_emb_dim=time_dim, device=device)
     elif model_name=='UNetMNIST':
         return UNetMNIST(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, time_emb_dim=time_dim, 
+                         down=down, up=up, ks=ks, pd=pd, conv_block_type=conv_block_type, final_act=final_act, device=device)
+    elif model_name=='ResUNetMNIST':
+        return ResUNetMNIST(in_channels=1, out_channels=1, base_channel=hidden_dim, depth=num_hidden, time_emb_dim=time_dim, 
                          down=down, up=up, ks=ks, pd=pd, conv_block_type=conv_block_type, final_act=final_act, device=device)
     elif model_name=='UNetCIFAR10':
         return UNetCIFAR10(in_channels=3, out_channels=3, base_channel=hidden_dim, depth=num_hidden, time_emb_dim=time_dim, device=device)
